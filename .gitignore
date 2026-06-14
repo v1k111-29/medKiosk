@@ -1,0 +1,34 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+env/
+venv/
+ENV/
+
+# Databases
+*.db
+*.db-journal
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+static/assets/
+static/index.html
+
+# AI Models & Temp
+.deepface/
+temp/
+*.webm
+*.wav
+*.mp3
+
+# IDEs
+.vscode/
+.idea/
+
+# Environment variables
+.env

@@ -1,0 +1,148 @@
+import React, { useState, useEffect } from 'react';
+import { useKioskStore } from '../store/useKioskStore';
+import { useTTS } from '../hooks/useVoice';
+import { useVoiceTriage } from '../hooks/useVoiceTriage';
+import { Mic, Send, Loader2, ChevronLeft, Square } from 'lucide-react';
+
+const SYMPTOM_DEPT: Record<string, { id: string; en: string; ta: string; room: string; waitMins: number }> = {
+  fever:        { id:'general',   en:'General Medicine', ta:'பொது மருத்துவம்',    room:'OPD-1', waitMins:12 },
+  headache:     { id:'general',   en:'General Medicine', ta:'பொது மருத்துவம்',    room:'OPD-1', waitMins:12 },
+  cough:        { id:'general',   en:'General Medicine', ta:'பொது மருத்துவம்',    room:'OPD-1', waitMins:12 },
+  chest:        { id:'cardio',    en:'Cardiology',       ta:'இதய நோயியல்',       room:'OPD-3', waitMins:25 },
+  heart:        { id:'cardio',    en:'Cardiology',       ta:'இதய நோயியல்',       room:'OPD-3', waitMins:25 },
+  bone:         { id:'ortho',     en:'Orthopaedics',     ta:'எலும்பு சிகிச்சை',  room:'OPD-4', waitMins:20 },
+  joint:        { id:'ortho',     en:'Orthopaedics',     ta:'எலும்பு சிகிச்சை',  room:'OPD-4', waitMins:20 },
+  fracture:     { id:'ortho',     en:'Orthopaedics',     ta:'எலும்பு சிகிச்சை',  room:'OPD-4', waitMins:20 },
+  child:        { id:'paeds',     en:'Paediatrics',      ta:'குழந்தை நலம்',       room:'OPD-2', waitMins:10 },
+  baby:         { id:'paeds',     en:'Paediatrics',      ta:'குழந்தை நலம்',       room:'OPD-2', waitMins:10 },
+  pregnancy:    { id:'gyne',      en:'Gynaecology',      ta:'மகளிர் நலம்',        room:'OPD-5', waitMins:18 },
+  skin:         { id:'derm',      en:'Dermatology',      ta:'தோல் நோய்',          room:'OPD-6', waitMins:12 },
+  rash:         { id:'derm',      en:'Dermatology',      ta:'தோல் நோய்',          room:'OPD-6', waitMins:12 },
+  ear:          { id:'ent',       en:'ENT',               ta:'காது மூக்கு தொண்டை',room:'OPD-7', waitMins:15 },
+  throat:       { id:'ent',       en:'ENT',               ta:'காது மூக்கு தொண்டை',room:'OPD-7', waitMins:15 },
+  eye:          { id:'ophthal',   en:'Ophthalmology',    ta:'கண் நோய்',           room:'OPD-8', waitMins:20 },
+  vision:       { id:'ophthal',   en:'Ophthalmology',    ta:'கண் நோய்',           room:'OPD-8', waitMins:20 },
+};
+
+function detectDept(text: string) {
+  const lower = text.toLowerCase();
+  for (const [kw, dept] of Object.entries(SYMPTOM_DEPT)) {
+    if (lower.includes(kw)) return dept;
+  }
+  return SYMPTOM_DEPT['fever'];
+}
+
+const L = {
+  en: {
+    title: 'How are you feeling today?',
+    sub: 'Type or speak your symptoms in Tamil or English.',
+    placeholder: 'e.g. I have fever and headache since yesterday…',
+    startSpeak: 'Tap to Speak',
+    stopSpeak: 'Stop Recording',
+    listening: 'Listening…',
+    analyze: 'Analyze & Route',
+    analyzing: 'Analysing…',
+    back: 'Back',
+    tts: 'Please describe your symptoms by typing or by tapping the microphone button.',
+  },
+  ta: {
+    title: 'இன்று எப்படி உணர்கிறீர்கள்?',
+    sub: 'உங்கள் அறிகுறிகளை தமிழ் அல்லது ஆங்கிலத்தில் சொல்லுங்கள்.',
+    placeholder: 'எ.கா. நேற்றிலிருந்து காய்ச்சல் மற்றும் தலைவலி உள்ளது…',
+    startSpeak: 'பேச அழுத்தவும்',
+    stopSpeak: 'நிறுத்தவும்',
+    listening: 'கேட்கிறது…',
+    analyze: 'பகுப்பாய்வு செய்யவும்',
+    analyzing: 'பகுப்பாய்வு…',
+    back: 'திரும்பு',
+    tts: 'உங்கள் அறிகுறிகளை தட்டச்சு செய்யுங்கள் அல்லது மைக்ரோஃபோன் பொத்தானை அழுத்தி பேசுங்கள்.',
+  },
+};
+
+const Triage: React.FC = () => {
+  const { language, setStep, setTriage } = useKioskStore();
+  const { speak } = useTTS();
+  const { startRecording, stopRecording, isRecording, isProcessing, transcription, setTranscription } = useVoiceTriage();
+  const [loading, setLoading] = useState(false);
+  const t = L[language];
+
+  useEffect(() => { speak(t.tts); }, []);
+
+  const handleAnalyze = () => {
+    if (!transcription.trim()) return;
+    setLoading(true);
+    speak(language === 'ta' ? 'அறிகுறிகள் பகுப்பாய்வு செய்யப்படுகின்றன.' : 'Analysing your symptoms.');
+    setTimeout(() => {
+      const dept = detectDept(transcription);
+      setTriage({
+        symptoms: transcription,
+        deptId: dept.id,
+        deptName: dept.en,
+        deptNameTa: dept.ta,
+        room: dept.room,
+        waitMins: dept.waitMins,
+      });
+      setLoading(false);
+      setStep('DEPARTMENT');
+    }, 1200);
+  };
+
+  const ta = language === 'ta';
+
+  return (
+    <div className="p-6 h-full flex flex-col bg-[#F2F6FA]">
+      <div className="mb-5">
+        <h1 className="text-3xl font-bold text-[#1A2B4A]"
+          style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>
+          {t.title}
+        </h1>
+        <p className="text-base text-[#4A5C78] mt-1">{t.sub}</p>
+      </div>
+
+      <textarea
+        className="flex-1 w-full p-5 text-lg rounded-3xl border-2 border-white shadow-lg
+          focus:border-[#2E7D96] outline-none resize-none bg-white transition-all"
+        placeholder={t.placeholder}
+        value={transcription}
+        onChange={e => setTranscription(e.target.value)}
+        style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}
+      />
+
+      <div className="flex gap-4 mt-5">
+        <button
+          onClick={() => setStep('MENU')}
+          className="flex items-center gap-2 bg-white border-2 border-[#DDE4EE] text-[#4A5C78]
+            px-6 py-4 rounded-2xl font-semibold hover:border-[#2E7D96] transition-all">
+          <ChevronLeft size={20} /> {t.back}
+        </button>
+
+        {/* Updated: Toggle mode button */}
+        <button
+          onClick={isRecording ? stopRecording : startRecording}
+          disabled={isProcessing}
+          className={`flex-1 flex items-center justify-center gap-3 py-4 rounded-2xl text-lg font-bold
+            transition-all border-2 ${isRecording
+              ? 'bg-red-500 border-red-500 text-white animate-pulse shadow-red-200 shadow-lg'
+              : isProcessing
+                ? 'bg-orange-100 border-orange-300 text-orange-600 cursor-not-allowed'
+                : 'bg-white border-[#DDE4EE] text-[#1A2B4A] hover:border-[#2E7D96]'}`}>
+          {isProcessing ? <Loader2 className="animate-spin" /> : isRecording ? <Square size={24} /> : <Mic size={24} />}
+          {isRecording ? t.stopSpeak : isProcessing ? t.analyzing : t.startSpeak}
+        </button>
+
+        <button
+          onClick={handleAnalyze}
+          disabled={loading || isProcessing || isRecording || !transcription.trim()}
+          className="flex-1 flex items-center justify-center gap-3 bg-[#2E7D96] hover:bg-[#236d84]
+            disabled:opacity-40 text-white py-4 rounded-2xl text-lg font-bold shadow-lg
+            active:scale-95 transition-all">
+          {loading
+            ? <><Loader2 size={22} className="animate-spin" />{t.analyzing}</>
+            : <><Send size={22} />{t.analyze}</>}
+        </button>
+      </div>
+    </div>
+  );
+};
+
+export default Triage;
