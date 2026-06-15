@@ -58,7 +58,7 @@ const FaceScan: React.FC = () => {
       if (data.status === 'found') {
         setPatient(data);
         speak(t.greet(data.name));
-        setStep('MENU');
+        setStep(language === 'en' ? 'CONVERSATION' : 'MENU');
       } else if (data.status === 'new') {
         setTempEmbedding(data.embedding);
         setTempGender(data.gender);

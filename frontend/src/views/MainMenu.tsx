@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
-import { Stethoscope, Calendar, RefreshCw, LogOut, ChevronRight } from 'lucide-react';
+import { Stethoscope, Calendar, RefreshCw, LogOut, ChevronRight, Bot } from 'lucide-react';
 
 const L = {
   en: {
@@ -68,6 +68,22 @@ const MainMenu: React.FC = () => {
 
       {/* Service cards */}
       <div className="grid grid-cols-1 gap-5 flex-1">
+        {language === 'en' && (
+          <button
+            onClick={() => setStep('CONVERSATION')}
+            className="bg-[#2E7D96] rounded-3xl shadow-lg p-7 flex items-center gap-6
+              hover:bg-[#236d84] active:scale-98 transition-all text-left text-white mb-2"
+          >
+            <div className="rounded-2xl p-4 flex-shrink-0 bg-white/20">
+              <Bot size={40} className="text-white" />
+            </div>
+            <div className="flex-1">
+              <p className="text-xl font-bold leading-tight">Switch to AI Voice Assistant</p>
+              <p className="text-white/80 text-sm mt-1">Talk to our robot for faster triage</p>
+            </div>
+            <ChevronRight size={24} className="text-white/40 flex-shrink-0" />
+          </button>
+        )}
         {t.cards.map(card => (
           <button
             key={card.key}

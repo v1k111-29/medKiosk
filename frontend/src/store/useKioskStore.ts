@@ -6,6 +6,7 @@ export type KioskStep =
   | 'SCAN'
   | 'REGISTER'
   | 'MENU'
+  | 'CONVERSATION'
   | 'TRIAGE'
   | 'DEPARTMENT'
   | 'VITALS'

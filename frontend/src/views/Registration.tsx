@@ -88,7 +88,7 @@ const Registration: React.FC = () => {
           ? `பதிவு வெற்றிகரமாக முடிந்தது. நல்வரவு, ${form.name.split(' ')[0]}!`
           : `Registration successful. Welcome, ${form.name.split(' ')[0]}!`
         );
-        setStep('MENU');
+        setStep(language === 'en' ? 'CONVERSATION' : 'MENU');
       }
     } catch { setErr('Registration failed. Please try again.'); }
     finally { setLoading(false); }

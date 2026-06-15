@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from app.core.database import init_db
-from app.routers import face, voice, medical
+from app.routers import face, voice, medical, conversation
 from app.core.errors import KioskError, kiosk_exception_handler, global_exception_handler
 
 @asynccontextmanager
@@ -39,10 +39,18 @@ app.add_middleware(
 app.include_router(face.router)
 app.include_router(voice.router)
 app.include_router(medical.router)
+app.include_router(conversation.router)
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "version": "1.1.0", "plugins": ["face", "voice", "medical"]}
+    from app.services.llm_service import check_ollama_health
+    ollama_ok = await check_ollama_health()
+    return {
+        "status": "ok",
+        "version": "1.2.0",
+        "plugins": ["face", "voice", "medical", "conversation"],
+        "ollama_available": ollama_ok,
+    }
 
 # Static Files
 BASE_DIR = Path(__file__).parent.parent.resolve()

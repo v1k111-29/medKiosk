@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
-import { DEPARTMENTS } from '../data/departments';
+import { DEPARTMENTS, DepartmentData } from '../data/departments';
 import { ChevronRight, ChevronLeft, CheckCircle } from 'lucide-react';
 
 const L = {
@@ -29,14 +29,14 @@ const Department: React.FC = () => {
   const t = L[language];
   const ta = language === 'ta';
 
-  const recommended = DEPARTMENTS.find(d => d.id === triage.deptId) ?? DEPARTMENTS[0];
-  const selected = DEPARTMENTS.find(d => d.id === triage.deptId) ?? DEPARTMENTS[0];
+  const recommended = DEPARTMENTS.find((d: DepartmentData) => d.id === triage.deptId) ?? DEPARTMENTS[0];
+  const selected = DEPARTMENTS.find((d: DepartmentData) => d.id === triage.deptId) ?? DEPARTMENTS[0];
 
   useEffect(() => {
     speak(t.tts(ta ? recommended.ta : recommended.en));
   }, []);
 
-  const selectDept = (dept: typeof DEPARTMENTS[0]) => {
+  const selectDept = (dept: DepartmentData) => {
     setTriage({
       deptId: dept.id,
       deptName: dept.en,
@@ -84,7 +84,7 @@ const Department: React.FC = () => {
       {/* All departments grid */}
       <p className="text-xs font-semibold text-[#8A9BB5] uppercase tracking-widest mb-3">{t.subManual}</p>
       <div className="grid grid-cols-2 gap-3 flex-1">
-        {DEPARTMENTS.filter(d => d.id !== 'emergency').map(dept => (
+        {DEPARTMENTS.filter((d: DepartmentData) => d.id !== 'emergency').map((dept: DepartmentData) => (
           <button
             key={dept.id}
             onClick={() => selectDept(dept)}

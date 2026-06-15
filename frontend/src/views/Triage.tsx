@@ -3,34 +3,7 @@ import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
 import { useVoiceTriage } from '../hooks/useVoiceTriage';
 import { Mic, Send, Loader2, ChevronLeft, Square } from 'lucide-react';
-
-const SYMPTOM_DEPT: Record<string, { id: string; en: string; ta: string; room: string; waitMins: number }> = {
-  fever:        { id:'general',   en:'General Medicine', ta:'பொது மருத்துவம்',    room:'OPD-1', waitMins:12 },
-  headache:     { id:'general',   en:'General Medicine', ta:'பொது மருத்துவம்',    room:'OPD-1', waitMins:12 },
-  cough:        { id:'general',   en:'General Medicine', ta:'பொது மருத்துவம்',    room:'OPD-1', waitMins:12 },
-  chest:        { id:'cardio',    en:'Cardiology',       ta:'இதய நோயியல்',       room:'OPD-3', waitMins:25 },
-  heart:        { id:'cardio',    en:'Cardiology',       ta:'இதய நோயியல்',       room:'OPD-3', waitMins:25 },
-  bone:         { id:'ortho',     en:'Orthopaedics',     ta:'எலும்பு சிகிச்சை',  room:'OPD-4', waitMins:20 },
-  joint:        { id:'ortho',     en:'Orthopaedics',     ta:'எலும்பு சிகிச்சை',  room:'OPD-4', waitMins:20 },
-  fracture:     { id:'ortho',     en:'Orthopaedics',     ta:'எலும்பு சிகிச்சை',  room:'OPD-4', waitMins:20 },
-  child:        { id:'paeds',     en:'Paediatrics',      ta:'குழந்தை நலம்',       room:'OPD-2', waitMins:10 },
-  baby:         { id:'paeds',     en:'Paediatrics',      ta:'குழந்தை நலம்',       room:'OPD-2', waitMins:10 },
-  pregnancy:    { id:'gyne',      en:'Gynaecology',      ta:'மகளிர் நலம்',        room:'OPD-5', waitMins:18 },
-  skin:         { id:'derm',      en:'Dermatology',      ta:'தோல் நோய்',          room:'OPD-6', waitMins:12 },
-  rash:         { id:'derm',      en:'Dermatology',      ta:'தோல் நோய்',          room:'OPD-6', waitMins:12 },
-  ear:          { id:'ent',       en:'ENT',               ta:'காது மூக்கு தொண்டை',room:'OPD-7', waitMins:15 },
-  throat:       { id:'ent',       en:'ENT',               ta:'காது மூக்கு தொண்டை',room:'OPD-7', waitMins:15 },
-  eye:          { id:'ophthal',   en:'Ophthalmology',    ta:'கண் நோய்',           room:'OPD-8', waitMins:20 },
-  vision:       { id:'ophthal',   en:'Ophthalmology',    ta:'கண் நோய்',           room:'OPD-8', waitMins:20 },
-};
-
-function detectDept(text: string) {
-  const lower = text.toLowerCase();
-  for (const [kw, dept] of Object.entries(SYMPTOM_DEPT)) {
-    if (lower.includes(kw)) return dept;
-  }
-  return SYMPTOM_DEPT['fever'];
-}
+import { detectDept } from '../data/departments';
 
 const L = {
   en: {
@@ -116,7 +89,6 @@ const Triage: React.FC = () => {
           <ChevronLeft size={20} /> {t.back}
         </button>
 
-        {/* Updated: Toggle mode button */}
         <button
           onClick={isRecording ? stopRecording : startRecording}
           disabled={isProcessing}
