@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
-import { Printer, CheckCircle, RotateCcw } from 'lucide-react';
+import { faceApi } from '../services/api';
+import { Printer, CheckCircle, RotateCcw, Activity } from 'lucide-react';
 
 const L = {
   en: {
@@ -40,7 +41,8 @@ const Confirmation: React.FC = () => {
   const { speak } = useTTS();
   const t = L[language];
   const ta = language === 'ta';
-  const [smsSent, setSmsSent] = useState(false);
+  const [smsSent, setSmsSent]     = useState(false);
+  const [vitalsData, setVitalsData] = useState<any>(null);
 
   useEffect(() => {
     const tok = genToken();
@@ -49,6 +51,13 @@ const Confirmation: React.FC = () => {
     const dept = ta ? triage.deptNameTa : triage.deptName;
     const wait = triage.waitMins > 0 ? String(triage.waitMins) : t.immediate;
     speak(t.tts(tok, dept, triage.room, wait));
+
+    // Fetch latest vitals to show on slip
+    if (patient?.id) {
+      faceApi.get(`/vitals/${patient.id}/latest`)
+        .then(r => { if (r.data?.vitals) setVitalsData(r.data.vitals); })
+        .catch(() => {});
+    }
 
     // simulate SMS
     if (patient?.phone) {
@@ -119,11 +128,51 @@ const Confirmation: React.FC = () => {
         {/* Dashed divider */}
         <div className="border-t-2 border-dashed border-[#DDE4EE] mx-6 mb-4" />
 
+        {/* Vitals summary (if available) */}
+        {vitalsData && (
+          <div className="mx-6 mb-4">
+            <div className="flex items-center gap-2 mb-2">
+              <Activity size={14} className="text-[#2E7D96]" />
+              <span className="text-xs font-bold text-[#8A9BB5] uppercase tracking-wider">Vitals</span>
+            </div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              {vitalsData.height && (
+                <div className="text-center"><p className="text-[#8A9BB5]">Ht</p><p className="font-bold text-[#1A2B4A]">{vitalsData.height}cm</p></div>
+              )}
+              {vitalsData.weight && (
+                <div className="text-center"><p className="text-[#8A9BB5]">Wt</p><p className="font-bold text-[#1A2B4A]">{vitalsData.weight}kg</p></div>
+              )}
+              {vitalsData.bmi && (
+                <div className="text-center"><p className="text-[#8A9BB5]">BMI</p><p className="font-bold text-[#1A2B4A]">{vitalsData.bmi}</p></div>
+              )}
+              {vitalsData.bp_sys && (
+                <div className="text-center"><p className="text-[#8A9BB5]">BP</p><p className="font-bold text-[#1A2B4A]">{vitalsData.bp_sys}/{vitalsData.bp_dia}</p></div>
+              )}
+              {vitalsData.spo2 && (
+                <div className="text-center"><p className="text-[#8A9BB5]">SpO₂</p><p className="font-bold text-[#1A2B4A]">{vitalsData.spo2}%</p></div>
+              )}
+            </div>
+            {vitalsData.flags && vitalsData.flags.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-2">
+                {vitalsData.flags.map((f: string) => (
+                  <span key={f} className="text-xs bg-amber-100 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full font-semibold">
+                    ⚠ {f}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Dashed divider 2 */}
+        <div className="border-t-2 border-dashed border-[#DDE4EE] mx-6 mb-4" />
+
         {/* Meta rows */}
         <div className="px-8 pb-6 space-y-2 text-sm">
           {[
             [t.patient,  patient?.name || '—'],
             [t.service,  svcLbl],
+            ...(triage.doctorName ? [['Doctor', triage.doctorName]] : []),
             [t.room,     triage.room || '—'],
             [t.waitTime, waitLabel],
           ].map(([lbl, val]) => (

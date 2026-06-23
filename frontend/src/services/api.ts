@@ -1,10 +1,17 @@
 import axios from 'axios';
 
-// Unified Backend Service (Port 8000)
+/**
+ * Unified API client for all backend requests.
+ *
+ * Uses relative base URL so it works on localhost, LAN, and production
+ * without hardcoding. Set VITE_API_URL in .env for custom deployments.
+ */
+const BASE_URL = import.meta.env.VITE_API_URL ?? '';
+
 export const faceApi = axios.create({
-  baseURL: 'http://localhost:8000',
-  timeout: 30000, // Increased for AI processing
+  baseURL: BASE_URL,
+  timeout: 60000, // 60s — generous for Whisper + Ollama on CPU
 });
 
-export const whisperApi = faceApi; // They share the same base now
-
+// Alias for backward compat
+export const whisperApi = faceApi;

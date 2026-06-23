@@ -16,17 +16,19 @@ const App: React.FC = () => {
 
   const renderStep = () => {
     switch (step) {
-      case 'SPLASH':      return <Splash />;
-      case 'LANGUAGE':    return <LanguageSelect />;
-      case 'SCAN':        return <FaceScan />;
-      case 'REGISTER':    return <Registration />;
-      case 'MENU':        return <MainMenu />;
+      // SPLASH is now the always-on camera welcome screen.
+      // SCAN step still exists as fallback (e.g. if manually triggered).
+      case 'SPLASH':       return <Splash />;
+      case 'LANGUAGE':     return <LanguageSelect />;
+      case 'SCAN':         return <FaceScan />;
+      case 'REGISTER':     return <Registration />;
+      case 'MENU':         return <MainMenu />;
       case 'CONVERSATION': return <Conversation />;
-      case 'TRIAGE':      return <Triage />;
-      case 'DEPARTMENT':  return <Department />;
-      case 'VITALS':      return <Vitals />;
-      case 'CONFIRM':     return <Confirmation />;
-      default:            return <Splash />;
+      case 'TRIAGE':       return <Triage />;
+      case 'DEPARTMENT':   return <Department />;
+      case 'VITALS':       return <Vitals />;
+      case 'CONFIRM':      return <Confirmation />;
+      default:             return <Splash />;
     }
   };
 

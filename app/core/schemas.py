@@ -1,11 +1,16 @@
+"""
+Pydantic schemas for request/response validation.
+"""
+
 from pydantic import BaseModel, Field
-from typing import Optional, List
-from datetime import datetime
+from typing import Optional
+
 
 # ── Face Recognition Schemas ───────────────────────────────────────────────
 
 class IdentifyRequest(BaseModel):
     image: str = Field(..., description="Base64 encoded image data URL")
+
 
 class PatientRegister(BaseModel):
     name: str
@@ -14,17 +19,21 @@ class PatientRegister(BaseModel):
     phone: Optional[str] = None
     blood_group: Optional[str] = None
     city: Optional[str] = None
-    embedding: Optional[str] = Field(None, description="Base64 encoded embedding pickle")
+    embedding: Optional[str] = Field(
+        None, description="Hex-encoded raw float32 embedding bytes"
+    )
+
 
 class PatientRead(BaseModel):
     id: int
     name: str
-    gender: Optional[str]
-    age: Optional[int]
+    gender: Optional[str] = None
+    age: Optional[int] = None
     phone: Optional[str] = None
     blood_group: Optional[str] = None
     visit_count: int
     created_at: str
+
 
 # ── Voice Transcription Schemas ──────────────────────────────────────────────
 
@@ -33,14 +42,15 @@ class TranscriptionResponse(BaseModel):
     status: str
     language: str
 
+
 # ── Medical Vitals Schemas ──────────────────────────────────────────────────
 
 class VitalsCreate(BaseModel):
     patient_id: int
-    height: Optional[int] = None
-    weight: Optional[int] = None
+    height: Optional[float] = None
+    weight: Optional[float] = None
     bp_sys: Optional[int] = None
     bp_dia: Optional[int] = None
-    spo2: Optional[int] = None
+    spo2: Optional[float] = None
     diabetes: bool = False
     hypertension: bool = False

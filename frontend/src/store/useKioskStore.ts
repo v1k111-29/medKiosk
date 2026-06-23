@@ -31,6 +31,8 @@ export interface TriageData {
   deptNameTa: string;
   room: string;
   waitMins: number;
+  doctorId: number | null;
+  doctorName: string;
 }
 
 export interface VitalsData {
@@ -72,6 +74,8 @@ const defaultTriage: TriageData = {
   deptNameTa: '',
   room: '',
   waitMins: 15,
+  doctorId: null,
+  doctorName: '',
 };
 
 const defaultVitals: VitalsData = {
