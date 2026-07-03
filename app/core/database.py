@@ -16,17 +16,15 @@ def get_db():
     conn.execute("PRAGMA journal_mode = WAL")
     try:
         yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
 
-def get_db_conn():
-    """Get a raw database connection (caller must close)."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+
 
 
 def init_db():

@@ -66,34 +66,34 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[AI] ArcFace warmup note: {e}")
 
-    # 3. Check Groq Whisper availability (cloud API — no model to load)
-    from app.services.voice_service import is_whisper_available, GROQ_WHISPER_MODEL
+    # 3. Check Sarvam AI STT availability
+    from app.services.voice_service import is_whisper_available
     if is_whisper_available():
-        logger.info(f"[AI] [OK] Groq Whisper ready (model: {GROQ_WHISPER_MODEL})")
+        logger.info(f"[AI] [OK] Sarvam AI STT ready (model: saaras:v3)")
     else:
         logger.warning(
-            "[AI] [WARN] GROQ_API_KEY not set -- voice transcription unavailable. "
-            "Get a free key at https://console.groq.com and set GROQ_API_KEY env var."
+            "[AI] [WARN] SARVAM_API_KEY not set -- voice transcription unavailable. "
+            "Get a key at https://dashboard.sarvam.ai and set SARVAM_API_KEY env var."
         )
 
-    # 4. Check Groq LLM availability
+    # 4. Check Ollama LLM availability (local Gemma 3 for RPi 5)
     from app.services.llm_service import (
-        check_ollama_health, check_ollama_model, warmup_ollama, GROQ_MODEL
+        check_ollama_health, check_ollama_model, warmup_ollama, OLLAMA_MODEL
     )
-    groq_ok = await check_ollama_health()  # alias: checks Groq API key + reachability
-    if groq_ok:
+    ollama_ok = await check_ollama_health()
+    if ollama_ok:
         model_info = await check_ollama_model()
         if model_info["available"]:
-            logger.info(f"[AI] [OK] Groq LLM ready (model: {GROQ_MODEL})")
-            await warmup_ollama()  # alias: no-op for Groq (no warmup needed)
+            logger.info(f"[AI] [OK] Ollama LLM ready (model: {OLLAMA_MODEL})")
+            await warmup_ollama()  # loads model into memory for faster first response
         else:
             logger.warning(
-                f"[AI] [WARN] Groq not available: {model_info.get('error', 'unknown error')}"
+                f"[AI] [WARN] Ollama model not available: {model_info.get('error', 'unknown error')}"
             )
     else:
         logger.warning(
-            "[AI] [WARN] Groq API unreachable -- conversational AI unavailable. "
-            "Check GROQ_API_KEY at https://console.groq.com"
+            "[AI] [WARN] Ollama not running -- conversational AI unavailable. "
+            "Start with: ollama serve"
         )
 
     logger.info("=" * 50)
@@ -155,7 +155,7 @@ async def health():
     except Exception:
         db_ok = False
 
-    # Ollama health
+    # Ollama LLM health
     ollama_ok = await check_ollama_health()
 
     return {

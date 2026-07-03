@@ -1,7 +1,7 @@
 """
-Voice Transcription Router — audio upload via Groq Whisper API.
+Voice Transcription Router — audio upload via Sarvam AI STT.
 
-No local ffmpeg required — Groq handles all audio decoding in the cloud.
+No local ffmpeg required — Sarvam AI handles all audio decoding in the cloud.
 Supports: webm, ogg, mp4/m4a, mp3, wav (all browser MediaRecorder formats).
 """
 
@@ -13,7 +13,6 @@ import logging
 from app.services.voice_service import (
     transcribe_async,
     is_whisper_available,
-    GROQ_WHISPER_MODEL,
 )
 from app.core.errors import KioskError
 
@@ -34,30 +33,28 @@ MIME_TO_EXT = {
     "audio/x-wav":             ".wav",
 }
 
-# Groq Whisper max file size: 25 MB
+# Sarvam AI max file size: 25 MB
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
 
 @router.get("/transcribe/health")
 async def transcribe_health():
     """
-    Diagnostic endpoint — check Groq Whisper availability.
-    No ffmpeg check needed: Groq decodes audio in the cloud.
+    Diagnostic endpoint — check Sarvam AI availability.
     """
-    api_key_set = bool(os.getenv("GROQ_API_KEY", ""))
-    groq_ok = is_whisper_available()
+    api_key_set = bool(os.getenv("SARVAM_API_KEY", ""))
+    sarvam_ok = is_whisper_available()
 
     return {
-        "provider":            "Groq Whisper API",
-        "model":               GROQ_WHISPER_MODEL,
+        "provider":            "Sarvam AI STT",
+        "model":               "saaras:v3",
         "api_key_configured":  api_key_set,
-        "ready":               groq_ok,
+        "ready":               sarvam_ok,
         "ffmpeg_required":     False,
         "note": (
-            "Set GROQ_API_KEY env var to enable transcription. "
-            "Free key: https://console.groq.com"
+            "Set SARVAM_API_KEY env var to enable transcription. "
             if not api_key_set
-            else "Groq Whisper is ready."
+            else "Sarvam AI is ready."
         ),
     }
 
@@ -68,7 +65,7 @@ async def transcribe(
     language: str = Form("auto"),
 ):
     """
-    Transcribe audio via Groq Whisper API.
+    Transcribe audio via Sarvam AI STT.
 
     `language`:
       - "en"   -> force English
@@ -86,9 +83,8 @@ async def transcribe(
     # ── Pre-checks ──────────────────────────────────────────────────────────
     if not is_whisper_available():
         raise KioskError(
-            "Voice transcription is unavailable: GROQ_API_KEY is not set. "
-            "Get a free key at https://console.groq.com",
-            "குரல் சேவை கிடைக்கவில்லை. GROQ_API_KEY அமைக்கப்படவில்லை.",
+            "Voice transcription is unavailable: SARVAM_API_KEY is not set. ",
+            "குரல் சேவை கிடைக்கவில்லை. SARVAM_API_KEY அமைக்கப்படவில்லை.",
             status_code=503,
         )
 
@@ -141,7 +137,7 @@ async def transcribe(
             "transcription": text,
             "status": "success",
             "language": result.get("language", "unknown"),
-            "provider": "groq",
+            "provider": "sarvam",
         }
 
     except KioskError:

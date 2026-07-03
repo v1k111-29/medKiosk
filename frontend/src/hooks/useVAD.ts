@@ -16,8 +16,8 @@ interface UseVADOptions {
 
 export function useVAD({
   stream,
-  threshold = 15, // Adjusted for typical microphone levels
-  silenceDelayMs = 1500, // 1.5 seconds of silence means they stopped speaking
+  threshold = 20, // Sensitive enough for quiet speech ("hi", "yes"), filters near-silence
+  silenceDelayMs = 2000, // 2s: gives patients time to think between words
   maxDurationMs = 8000, // 8 seconds maximum per turn to force conversation flow
   paused = false,
   onSpeechStart,
@@ -36,6 +36,12 @@ export function useVAD({
   const speechStartRef = useRef<number | null>(null);
   const lastSpeechEndRef = useRef<number>(0);
   const pausedRef = useRef(paused);
+  // Sustained-speech guard: track when volume FIRST crossed the threshold.
+  // onSpeechStart only fires after this many ms of continuous above-threshold audio.
+  // 80ms: long enough to reject a noise burst (door slam ~20–50ms),
+  // short enough to catch a short word like "hi" (~150–300ms).
+  const SUSTAINED_SPEECH_MS = 80;
+  const voiceRisingRef = useRef<number | null>(null);
   
   // Keep callbacks fresh without re-triggering effect
   const cbRef = useRef({ onSpeechStart, onSpeechEnd });
@@ -53,6 +59,7 @@ export function useVAD({
         setIsSpeaking(false);
         silenceStartRef.current = null;
         speechStartRef.current = null;
+        voiceRisingRef.current = null;
         lastSpeechEndRef.current = Date.now();
         cbRef.current.onSpeechEnd?.();
       }
@@ -73,13 +80,19 @@ export function useVAD({
       const ctx = new AudioContextClass();
       audioContextRef.current = ctx;
 
+      // Add a highpass filter at 300Hz to eliminate AC hum and fan noise
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.value = 300;
+
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 512;
       analyser.smoothingTimeConstant = 0.4;
       analyserRef.current = analyser;
 
       const source = ctx.createMediaStreamSource(stream);
-      source.connect(analyser);
+      source.connect(filter);
+      filter.connect(analyser);
       sourceRef.current = source;
 
       const bufferLength = analyser.frequencyBinCount;
@@ -114,11 +127,20 @@ export function useVAD({
         if (speakingNow && !inCooldown) {
           silenceStartRef.current = null;
           if (!isSpeakingRef.current) {
-            isSpeakingRef.current = true;
-            speechStartRef.current = Date.now();
-            setIsSpeaking(true);
-            cbRef.current.onSpeechStart?.();
+            // Sustained-speech guard: don't fire onSpeechStart on the first
+            // frame above threshold — wait until the voice has been continuously
+            // above threshold for SUSTAINED_SPEECH_MS ms to rule out noise bursts.
+            if (voiceRisingRef.current === null) {
+              voiceRisingRef.current = Date.now();
+            } else if (Date.now() - voiceRisingRef.current >= SUSTAINED_SPEECH_MS) {
+              isSpeakingRef.current = true;
+              speechStartRef.current = Date.now();
+              voiceRisingRef.current = null;
+              setIsSpeaking(true);
+              cbRef.current.onSpeechStart?.();
+            }
           } else {
+            voiceRisingRef.current = null; // already speaking, reset rising counter
             // Check max duration
             if (speechStartRef.current && Date.now() - speechStartRef.current > maxDurationMs) {
               isSpeakingRef.current = false;
@@ -130,6 +152,7 @@ export function useVAD({
             }
           }
         } else {
+          voiceRisingRef.current = null; // volume dropped — reset sustained-speech counter
           if (isSpeakingRef.current) {
             // Also check max duration even during silence delay
             if (speechStartRef.current && Date.now() - speechStartRef.current > maxDurationMs) {

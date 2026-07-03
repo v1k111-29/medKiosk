@@ -48,6 +48,37 @@ function pickMimeType(): string {
   return '';
 }
 
+/**
+ * RMS energy check: decode the audio blob and measure signal level.
+ * Returns false (= skip transcription) when the audio is too quiet to contain
+ * real speech — i.e. it’s just ambient hiss, AC noise, or a mic click.
+ *
+ * Real speech RMS is typically 0.02–0.15.
+ * Ambient noise / silence RMS is typically 0.001–0.007.
+ * Threshold 0.008 sits between these ranges with a small safety margin.
+ */
+async function checkAudioHasVoice(_blob: Blob): Promise<boolean> {
+  // ⚡ TEMPORARILY DISABLED — always pass audio to Whisper.
+  // Re-enable by restoring the RMS energy check below.
+  // To re-enable: remove this return and uncomment the original body.
+  return true;
+  /* --- original RMS filter (disabled) ---
+  try {
+    const arrayBuffer = await _blob.arrayBuffer();
+    const ctx = new OfflineAudioContext(1, 1, 44100);
+    const decoded = await ctx.decodeAudioData(arrayBuffer);
+    const data = decoded.getChannelData(0);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+    const rms = Math.sqrt(sum / data.length);
+    console.debug(`[ConvReg] Audio RMS energy: ${rms.toFixed(5)}`);
+    return rms > 0.008;
+  } catch {
+    return true;
+  }
+  --- end original --- */
+}
+
 export function useConversationalRegistration(options: UseConvRegOptions = {}) {
   const { language = 'en', onFieldsExtracted, onAllCollected } = options;
   const { speak, isSpeaking } = useTTS();
@@ -70,6 +101,13 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
   const startTimeRef = useRef<number>(0);
   const isProcessingRef = useRef(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // historyRef always tracks the latest history to avoid stale closures in sendToLLM
+  const historyRef = useRef<ConvMessage[]>([]);
+  // Keep ref in sync with state
+  useEffect(() => {
+    historyRef.current = history;
+  }, [history]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -106,7 +144,7 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
     setError(null);
 
     const userMsg: ConvMessage = { role: 'user', content: transcript };
-    const updatedHistory = [...history, userMsg];
+    const updatedHistory = [...historyRef.current, userMsg];
     setHistory(updatedHistory);
 
     try {
@@ -163,7 +201,7 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
       isProcessingRef.current = false;
       setIsProcessing(false);
     }
-  }, [collectedFields, history, speak, onFieldsExtracted, onAllCollected]);
+  }, [collectedFields, speak, onFieldsExtracted, onAllCollected]);
 
   // VAD Callback: Speech detected, start recording
   const handleSpeechStart = useCallback(() => {
@@ -190,6 +228,14 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
           return;
         }
 
+        // RMS energy guard: skip transcription if the audio is just ambient
+        // noise / silence — no point sending it to Groq Whisper.
+        const hasVoice = await checkAudioHasVoice(audioBlob);
+        if (!hasVoice) {
+          console.debug('[ConvReg] Audio RMS too low — skipping transcription (silence/noise)');
+          return;
+        }
+
         const ext = usedMime.includes('mp4') ? 'm4a'
                   : usedMime.includes('ogg') ? 'ogg'
                   : 'webm';
@@ -205,8 +251,10 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
             timeout: 30000,
           });
 
-          const transcript: string = transcribeRes.data?.transcription || '';
-          if (!transcript.trim()) {
+          const transcript: string = (transcribeRes.data?.transcription || '').trim();
+          // Guard against punctuation-only "transcripts" (e.g. a stray '.')
+          // which carry no real speech but would otherwise look truthy.
+          if (!transcript || !/[a-zA-Z\u0B80-\u0BFF0-9]/.test(transcript)) {
             setIsProcessing(false);
             return;
           }
@@ -215,6 +263,7 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
         } catch (err: any) {
           console.error('[ConvReg] Transcription failed:', err);
           setIsProcessing(false);
+          isProcessingRef.current = false;  // unlock pipeline
         }
       };
 
@@ -244,7 +293,8 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
     paused: isSpeaking || isProcessing,
     onSpeechStart: handleSpeechStart,
     onSpeechEnd: handleSpeechEnd,
-    threshold: 35, // Increased to ignore background fan/AC noise
+    threshold: 15, // High sensitivity for human voices
+    silenceDelayMs: 0, // No delay
   });
 
   const stopListening = useCallback(() => {

@@ -1,6 +1,5 @@
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
 
 class KioskError(Exception):
     def __init__(self, message_en: str, message_ta: str, status_code: int = 400):
@@ -21,7 +20,10 @@ async def kiosk_exception_handler(request: Request, exc: KioskError):
     )
 
 async def global_exception_handler(request: Request, exc: Exception):
-    # Log the real error for the developer
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+    if isinstance(exc, StarletteHTTPException):
+        from fastapi.responses import JSONResponse
+        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
     print(f"[ERROR] Global Catch: {str(exc)}")
     return JSONResponse(
         status_code=500,

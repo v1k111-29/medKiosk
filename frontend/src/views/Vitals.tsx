@@ -52,12 +52,13 @@ function bmiCategory(bmi: number): { label: string; color: string } {
 }
 
 function bpCategory(sys: string, dia: string): { label: string; color: string } | null {
-  const s = parseInt(sys), d = parseInt(dia);
+  const s = parseInt(sys);
   if (!s) return null;
-  if (s >= 180 || d >= 120) return { label: 'Hypertensive Crisis', color: 'text-red-600' };
-  if (s >= 140 || d >= 90)  return { label: 'Stage 2 HTN',         color: 'text-red-500' };
-  if (s >= 130 || d >= 80)  return { label: 'Stage 1 HTN',         color: 'text-amber-500' };
-  if (s < 90)               return { label: 'Low BP',              color: 'text-blue-500' };
+  const d = parseInt(dia); // NaN if empty
+  if (s >= 180 || (!isNaN(d) && d >= 120)) return { label: 'Hypertensive Crisis', color: 'text-red-600' };
+  if (s >= 140 || (!isNaN(d) && d >= 90))  return { label: 'Stage 2 HTN',         color: 'text-red-500' };
+  if (s >= 130 || (!isNaN(d) && d >= 80))  return { label: 'Stage 1 HTN',         color: 'text-amber-500' };
+  if (s < 90)                               return { label: 'Low BP',               color: 'text-blue-500' };
   return { label: 'Normal BP', color: 'text-green-600' };
 }
 
@@ -94,7 +95,7 @@ const Vitals: React.FC = () => {
         .then(r => { if (r.data?.vitals) setPrev(r.data.vitals); })
         .catch(() => {});
     }
-  }, []);
+  }, [speak, t.tts, patient?.id]); // was []
 
   const setV = (k: keyof typeof vitals, v: string | boolean) => setVitals({ [k]: v });
   const extractNum = (s: string) => s.replace(/[^0-9.]/g, '');

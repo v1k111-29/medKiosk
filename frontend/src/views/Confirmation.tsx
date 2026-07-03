@@ -31,10 +31,6 @@ const L = {
   },
 };
 
-function genToken() {
-  const prefix = ['A','B','C','D'][Math.floor(Math.random() * 4)];
-  return `${prefix}-${String(Math.floor(Math.random() * 98) + 1).padStart(2,'0')}`;
-}
 
 const Confirmation: React.FC = () => {
   const { language, patient, triage, token, setToken, reset } = useKioskStore();
@@ -45,12 +41,9 @@ const Confirmation: React.FC = () => {
   const [vitalsData, setVitalsData] = useState<any>(null);
 
   useEffect(() => {
-    const tok = genToken();
-    setToken(tok);
-
     const dept = ta ? triage.deptNameTa : triage.deptName;
     const wait = triage.waitMins > 0 ? String(triage.waitMins) : t.immediate;
-    speak(t.tts(tok, dept, triage.room, wait));
+    speak(t.tts(token, dept, triage.room, wait));
 
     // Fetch latest vitals to show on slip
     if (patient?.id) {
@@ -62,7 +55,7 @@ const Confirmation: React.FC = () => {
     // simulate SMS
     if (patient?.phone) {
       setTimeout(() => {
-        console.log(`[SMS] To: ${patient.phone} — Token ${tok}, ${triage.deptName}, ${triage.room}`);
+        console.log(`[SMS] To: ${patient.phone} — Token ${token}, ${triage.deptName}, ${triage.room}`);
         setSmsSent(true);
       }, 1500);
     }
@@ -70,7 +63,7 @@ const Confirmation: React.FC = () => {
     // auto-reset after 45 s
     const timer = setTimeout(() => reset(), 45000);
     return () => clearTimeout(timer);
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handlePrint = () => {
     window.print();

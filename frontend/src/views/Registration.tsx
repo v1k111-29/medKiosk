@@ -121,7 +121,6 @@ const Registration: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [formError, setFormError] = useState('');
   const [textInput, setTextInput] = useState('');
-  const [showManual, setShowManual] = useState(false);
 
   // Refs for scroll
   const chatEndRef = useRef<HTMLDivElement>(null);

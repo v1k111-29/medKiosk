@@ -120,7 +120,7 @@ const Conversation: React.FC = () => {
 
   // ── Core: handle what the patient says ────────────────────────────────────
   const handleUserSpeech = async (text: string) => {
-    // If we are awaiting confirmation of a pending booking
+    // ── Confirmation loop: keep ALL input inside here while a booking is pending ──
     if (pendingBooking) {
       const lower = text.toLowerCase();
       const isYes = /\b(yes|yeah|yep|correct|right|sure|okay|ok|go ahead|please|confirm|book|proceed)\b/.test(lower);
@@ -137,7 +137,8 @@ const Conversation: React.FC = () => {
         speak(retry, 'en');
         return;
       }
-      // Check if user mentioned a doctor's name
+
+      // Check if user mentioned a doctor's name from the available list
       if (pendingBooking.doctors?.length) {
         const matchedDoc = pendingBooking.doctors.find(d =>
           lower.includes(d.name.toLowerCase().split(' ').pop() || '')
@@ -146,22 +147,49 @@ const Conversation: React.FC = () => {
           await doBook({ ...pendingBooking, doctor_id: matchedDoc.id, doctor_name: matchedDoc.name });
           return;
         }
+
+        // Doctor name was said but doesn't match anyone on the list
+        const saidDoctor = /\b(dr\.?|doctor)\b/i.test(lower);
+        if (saidDoctor) {
+          const availNames = pendingBooking.doctors.map(d => d.name).join(' or ');
+          const notFoundMsg = availNames
+            ? `Sorry, that doctor isn't listed here. Available: ${availNames}. Or say "no preference" to proceed.`
+            : `Sorry, I don't have that doctor on record. Say "Yes" to confirm or "No" to cancel.`;
+          addMessage('ai', notFoundMsg);
+          speak(notFoundMsg, 'en');
+          return; // stay in confirmation loop — do NOT clear pendingBooking
+        }
       }
-      // Ambiguous — treat as new utterance
-      setPendingBooking(null);
+
+      // Ambiguous or gibberish input while confirming — re-prompt, stay in loop
+      const doctorHint = pendingBooking.doctors?.length
+        ? ` or say a doctor's name (${pendingBooking.doctors.map(d => d.name.split(' ').pop()).join('/')})`
+        : '';
+      const rePrompt = `Please say "Yes" to confirm your ${pendingBooking.dept_name} appointment${doctorHint}, or "No" to cancel.`;
+      addMessage('ai', rePrompt);
+      speak(rePrompt, 'en');
+      return; // never escape to general triage while confirming
     }
 
-    // Send to LLM general conversation handler
-    const response = await processText(text);
-    if (!response) return;
+    // ── Normal flow (no pending booking) ──────────────────────────────────────
+    addMessage('user', text);
 
-    speak(response.reply, 'en');
+    // For triage intents, route directly without a processText round-trip.
+    // Catches: symptoms, body parts, 'doctor'/'Dr.'/'dr', department requests, etc.
+    const lower = text.toLowerCase();
+    const likelyTriage = /\b(fever|pain|headache|cough|cold|chest|stomach|nausea|dizziness|rash|bleed|breath|sore|hurt|ache|symptom|unwell|ill|sick|doctor|dr|department|appointment|follow.?up|emergency|meet|visit|see)\b/.test(lower);
 
-    // If intent requires triage, run triage call
-    const triageIntents = ['symptoms', 'appointment', 'followup', 'emergency'];
-    if (triageIntents.includes(response.intent) && !pendingBooking) {
-      // Call triage endpoint for dept + booking info
-      await runTriage(text, response.intent);
+    if (likelyTriage) {
+      await runTriage(text, 'symptoms');
+    } else {
+      const response = await processText(text);
+      if (!response) return;
+      speak(response.reply, 'en');
+      const triageIntents = ['symptoms', 'appointment', 'followup', 'emergency'];
+      if (triageIntents.includes(response.intent) && !pendingBooking) {
+        await runTriage(text, response.intent);
+
+      }
     }
   };
 
@@ -171,7 +199,13 @@ const Conversation: React.FC = () => {
       const res = await faceApi.post('/conversation/triage', { text, language: 'en' });
       const data = res.data;
 
-      const deptId = data.dept_id || 'general';
+      if (data.intent === 'unavailable' || data.intent === 'clarify' || data.dept_id === 'unknown') {
+        addMessage('ai', data.reply);
+        speak(data.reply, 'en');
+        return;
+      }
+
+      const deptId = data.dept_id;
 
       // Fetch available doctors for this department
       let doctors: Doctor[] = [];
@@ -179,6 +213,16 @@ const Conversation: React.FC = () => {
         const docRes = await faceApi.get(`/doctors?dept_id=${deptId}`);
         doctors = (docRes.data?.doctors || []).filter((d: Doctor) => d.available);
       } catch { /* ignore */ }
+
+      // Detect if the user asked for a specific doctor who isn't in the list
+      const drMatch = text.match(/\b(?:dr\.?\s+|doctor\s+)([a-z]+)/i);
+      const requestedDocName = drMatch ? drMatch[1].toLowerCase() : null;
+      const requestedDocFound = requestedDocName
+        ? doctors.some(d => d.name.toLowerCase().includes(requestedDocName))
+        : true;
+      const docNotFoundNote = (!requestedDocFound && requestedDocName)
+        ? `Sorry, Dr. ${requestedDocName.charAt(0).toUpperCase() + requestedDocName.slice(1)} isn't listed at this hospital. `
+        : '';
 
       const booking: PendingBooking = {
         dept_id:   deptId,
@@ -206,8 +250,9 @@ const Conversation: React.FC = () => {
       const deptDisplay = DEPT_DISPLAY[booking.dept_id] || { name: booking.dept_name };
       const docNames = doctors.map(d => d.name).join(' or ');
       const docPart = docNames ? ` Available doctors: ${docNames}.` : '';
+      const prefixMsg = docNotFoundNote ? docNotFoundNote : (data.reply ? `${data.reply} ` : '');
       const confirmMsg =
-        `${data.reply || ''} ` +
+        `${prefixMsg}` +
         `I'll book you into ${deptDisplay.name}, ${booking.room}. ` +
         `Estimated wait: ~${booking.wait_mins} minutes.${docPart} ` +
         `Shall I confirm? You can also say a doctor's name if you have a preference.`;
@@ -278,7 +323,7 @@ const Conversation: React.FC = () => {
 
     } catch (err: any) {
       console.error('[Conversation] Booking failed:', err);
-      const msg = err?.response?.data?.detail || "Booking failed. Please try again.";
+      const msg = err?.response?.data?.message?.en || "Booking failed. Please try again.";
       addMessage('ai', msg);
       speak(msg, 'en');
     } finally {

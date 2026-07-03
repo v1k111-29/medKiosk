@@ -42,7 +42,7 @@ const FaceScan: React.FC = () => {
 
   useEffect(() => {
     speak(t.tts_prompt);
-  }, []);
+  }, [speak, t.tts_prompt]); // was []
 
   const capture = async () => {
     if (!webcamRef.current) return;

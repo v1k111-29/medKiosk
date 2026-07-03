@@ -2,8 +2,9 @@ import React, { useState, useEffect } from 'react';
 import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
 import { useVoiceTriage } from '../hooks/useVoiceTriage';
-import { Mic, Send, Loader2, ChevronLeft, Square, AlertTriangle } from 'lucide-react';
+import { Mic, Send, Loader2, ChevronLeft, AlertTriangle } from 'lucide-react';
 import { detectDept } from '../data/departments';
+import { faceApi } from '../services/api';
 
 const L = {
   en: {
@@ -50,11 +51,34 @@ const Triage: React.FC = () => {
     initListening();
   }, [initListening, speak, t.tts]);
 
-  const handleAnalyze = () => {
+  const handleAnalyze = async () => {
     if (!transcription.trim()) return;
     setLoading(true);
     speak(language === 'ta' ? 'அறிகுறிகள் பகுப்பாய்வு செய்யப்படுகின்றன.' : 'Analysing your symptoms.');
-    setTimeout(() => {
+    try {
+      const res = await faceApi.post('/conversation/triage', {
+        text: transcription,
+        language: language === 'ta' ? 'ta' : 'en',
+      });
+      const data = res.data;
+      if (data.intent === 'clarify' || data.dept_id === 'unknown') {
+        speak(data.reply);
+        setLoading(false);
+        // Clear transcription so they can try again or just let them add to it
+        return;
+      }
+
+      setTriage({
+        symptoms: transcription,
+        deptId: data.dept_id,
+        deptName: data.dept_name,
+        deptNameTa: data.dept_name,
+        room: data.room,
+        waitMins: data.wait_mins ?? 20,
+      });
+      setStep('DEPARTMENT');
+    } catch {
+      // Fallback to local keyword detection if API fails
       const dept = detectDept(transcription);
       setTriage({
         symptoms: transcription,
@@ -64,9 +88,10 @@ const Triage: React.FC = () => {
         room: dept.room,
         waitMins: dept.waitMins,
       });
-      setLoading(false);
       setStep('DEPARTMENT');
-    }, 1200);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const ta = language === 'ta';

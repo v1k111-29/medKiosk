@@ -103,6 +103,13 @@ async def book_appointment(req: BookAppointmentRequest):
             if not existing:
                 break
             token = _generate_token(req.dept_id)
+        else:
+            # All 5 retries produced collisions
+            raise KioskError(
+                "Could not generate a unique token. Please try again.",
+                "தனித்துவமான டோக்கன் உருவாக்க முடியவில்லை. மீண்டும் முயற்சிக்கவும்.",
+                status_code=503,
+            )
 
         # Insert appointment
         cursor = conn.execute(

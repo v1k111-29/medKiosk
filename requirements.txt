@@ -8,9 +8,9 @@ numpy>=1.24.0
 scipy>=1.11.0
 python-multipart
 httpx>=0.27.0
-groq>=0.9.0
+# groq>=0.9.0  # commented out — now using local Ollama instead of Groq cloud
 pydantic>=2.0.0
 
-# ── Optional: local Whisper (commented out — now using Groq cloud API) ──────
+# ── Optional: local Whisper (commented out — now using Sarvam AI cloud STT) ──
 # openai-whisper
 # torch

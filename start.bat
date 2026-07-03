@@ -12,9 +12,9 @@ if exist .env (
 ) else (
     echo.
     echo   [WARN] No .env file found^^!
-    echo   Copy .env.example to .env and add your GROQ_API_KEY.
-    echo   Free key: https://console.groq.com
-    echo.
+    echo   Copy .env.example to .env and add your SARVAM_API_KEY.
+    echo   Ensure Ollama is running: ollama serve
+    echo   Sarvam key: https://dashboard.sarvam.ai
 )
 
 REM ── Install dependencies ─────────────────────────────────────────────────
