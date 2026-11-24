@@ -5,21 +5,20 @@ No local ffmpeg required — Groq handles all audio decoding in the cloud.
 Supports: webm, ogg, mp4/m4a, mp3, wav (all browser MediaRecorder formats).
 """
 
-from fastapi import APIRouter, File, UploadFile, Form
-import tempfile
-import os
 import logging
+import os
+import tempfile
 
-from app.services.voice_service import (
-    transcribe_async,
-    is_whisper_available,
-    GROQ_WHISPER_MODEL,
-)
+from fastapi import APIRouter, Depends, File, Form, UploadFile
+
+from app.core.config import settings
 from app.core.errors import KioskError
+from app.core.security import require_kiosk
+from app.services.voice_service import is_whisper_available, transcribe_async
 
 logger = logging.getLogger("kiosk.voice")
 
-router = APIRouter(tags=["Voice Transcription"])
+router = APIRouter(tags=["Voice Transcription"], dependencies=[Depends(require_kiosk)])
 
 MIME_TO_EXT = {
     "audio/webm":              ".webm",
@@ -44,12 +43,12 @@ async def transcribe_health():
     Diagnostic endpoint — check Groq Whisper availability.
     No ffmpeg check needed: Groq decodes audio in the cloud.
     """
-    api_key_set = bool(os.getenv("GROQ_API_KEY", ""))
+    api_key_set = bool(settings.GROQ_API_KEY)
     groq_ok = is_whisper_available()
 
     return {
         "provider":            "Groq Whisper API",
-        "model":               GROQ_WHISPER_MODEL,
+        "model":               settings.GROQ_WHISPER_MODEL,
         "api_key_configured":  api_key_set,
         "ready":               groq_ok,
         "ffmpeg_required":     False,
@@ -78,10 +77,7 @@ async def transcribe(
     Audio formats accepted: webm, ogg, mp4/m4a, mp3, wav, aac
     Max size: 25MB
     """
-    logger.info(
-        f"/transcribe — file={audio.filename!r}, "
-        f"type={audio.content_type!r}, lang={language!r}"
-    )
+    logger.info("/transcribe — type=%r lang=%r", audio.content_type, language)
 
     # ── Pre-checks ──────────────────────────────────────────────────────────
     if not is_whisper_available():
@@ -148,7 +144,7 @@ async def transcribe(
         raise
     except RuntimeError as e:
         msg = str(e)
-        logger.error(f"[Voice] Transcription error: {msg}")
+        logger.error("[Voice] Transcription error: %s", msg)
         # Map "too short" errors to 400 so frontend shows a retry hint
         status_code = 400 if "too short" in msg.lower() or "couldn't be read" in msg.lower() else 500
         raise KioskError(
@@ -158,9 +154,7 @@ async def transcribe(
             status_code=status_code,
         )
     except Exception as e:
-        import traceback
-        logger.error(f"[Voice] Unexpected error: {e}")
-        traceback.print_exc()
+        logger.exception("[Voice] Unexpected error: %s", e)
         raise KioskError(
             "Voice processing failed. Please try again.",
             "குரல் செயலாக்கம் தோல்வியடைந்தது.",

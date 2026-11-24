@@ -25,6 +25,9 @@ export default defineConfig({
       '/conversation':  { target: 'http://localhost:8000', changeOrigin: true },
       '/patients':      { target: 'http://localhost:8000', changeOrigin: true },
       '/health':        { target: 'http://localhost:8000', changeOrigin: true },
+      '/departments':   { target: 'http://localhost:8000', changeOrigin: true },
+      '/doctors':       { target: 'http://localhost:8000', changeOrigin: true },
+      '/appointment':   { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

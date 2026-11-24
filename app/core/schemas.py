@@ -22,6 +22,12 @@ class PatientRegister(BaseModel):
     embedding: Optional[str] = Field(
         None, description="Hex-encoded raw float32 embedding bytes"
     )
+    face_consent: Optional[bool] = Field(
+        None,
+        description="Explicit consent to store the face embedding. Omitted = legacy kiosk "
+                    "flow (consent checkbox is mandatory before /register), treated as true.",
+    )
+    consent_version: Optional[str] = Field(None, description="Consent text version shown to the patient")
 
 
 class PatientRead(BaseModel):
@@ -31,8 +37,9 @@ class PatientRead(BaseModel):
     age: Optional[int] = None
     phone: Optional[str] = None
     blood_group: Optional[str] = None
-    visit_count: int
-    created_at: str
+    visit_count: Optional[int] = None
+    created_at: Optional[str] = None
+    face_consent: bool = False
 
 
 # ── Voice Transcription Schemas ──────────────────────────────────────────────
@@ -54,3 +61,7 @@ class VitalsCreate(BaseModel):
     spo2: Optional[float] = None
     diabetes: bool = False
     hypertension: bool = False
+    pulse: Optional[int] = None
+    temperature: Optional[float] = Field(None, description="Body temperature in °C")
+    resp_rate: Optional[int] = None
+    glucose: Optional[float] = Field(None, description="Blood glucose in mg/dL")

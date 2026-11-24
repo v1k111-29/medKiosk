@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from 'react';
-import { useKioskStore } from '../store/useKioskStore';
+import React, { useEffect, useRef, useState } from 'react';
+import { useKioskStore, deptLabel, findDepartment } from '../store/useKioskStore';
+import DepartmentsStatus from '../components/DepartmentsStatus';
 import { useTTS } from '../hooks/useVoice';
-import { DEPARTMENTS, DepartmentData } from '../data/departments';
-import { faceApi } from '../services/api';
+import { faceApi, Department as Dept } from '../services/api';
+import { DEFAULT_DEPT_ID } from '../data/departments';
 import { ChevronRight, ChevronLeft, CheckCircle, Loader2, User, Stethoscope } from 'lucide-react';
 
 interface Doctor {
@@ -45,7 +46,7 @@ const L = {
 };
 
 const Department: React.FC = () => {
-  const { language, triage, setTriage, setStep } = useKioskStore();
+  const { language, triage, setTriage, setStep, departments } = useKioskStore();
   const { speak } = useTTS();
   const t = L[language];
   const ta = language === 'ta';
@@ -53,12 +54,26 @@ const Department: React.FC = () => {
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
 
-  const recommended = DEPARTMENTS.find((d: DepartmentData) => d.id === triage.deptId) ?? DEPARTMENTS[0];
-  const selected = DEPARTMENTS.find((d: DepartmentData) => d.id === triage.deptId) ?? DEPARTMENTS[0];
+  // Recommended = the dept chosen by triage (or General as default); selected = current choice.
+  // The "Appointment" path arrives with no deptId, so fall back to the default dept.
+  const recommended: Dept | undefined =
+    findDepartment(departments, triage.deptId) ??
+    findDepartment(departments, DEFAULT_DEPT_ID) ??
+    departments[0];
+  const selected = recommended;
+  const selectableDepts = departments.filter((d) => d.id !== 'emergency');
+  const spokenRef = useRef(false);
 
   useEffect(() => {
-    speak(t.tts(ta ? recommended.ta : recommended.en));
-  }, []);
+    if (spokenRef.current || !recommended) return;
+    spokenRef.current = true;
+    speak(t.tts(deptLabel(recommended, language)));
+  }, [recommended]);
+
+  // Ensure the store always carries a concrete deptId once departments are known.
+  useEffect(() => {
+    if (!triage.deptId && recommended) setTriage({ deptId: recommended.id });
+  }, [recommended, triage.deptId]);
 
   // Fetch doctors whenever the selected department changes
   useEffect(() => {
@@ -75,14 +90,8 @@ const Department: React.FC = () => {
       .finally(() => setLoadingDocs(false));
   }, [triage.deptId]);
 
-  const selectDept = (dept: DepartmentData) => {
-    setTriage({
-      deptId: dept.id,
-      deptName: dept.en,
-      deptNameTa: dept.ta,
-      room: dept.room,
-      waitMins: dept.waitMins,
-    });
+  const selectDept = (dept: Dept) => {
+    setTriage({ deptId: dept.id });
   };
 
   const selectDoctor = (doc: Doctor | null) => {
@@ -94,10 +103,11 @@ const Department: React.FC = () => {
   };
 
   const confirm = () => {
+    if (!selected) return;
     const docMsg = triage.doctorName ? `, with ${triage.doctorName}` : '';
     speak(language === 'ta'
-      ? `${selected.ta}, ${selected.room}. தயவுசெய்து காத்திருங்கள்.`
-      : `${selected.en}, ${selected.room}${docMsg}. Please proceed.`
+      ? `${selected.name_ta}, ${selected.room}. தயவுசெய்து காத்திருங்கள்.`
+      : `${selected.name_en}, ${selected.room}${docMsg}. Please proceed.`
     );
     setStep('VITALS');
   };
@@ -110,24 +120,31 @@ const Department: React.FC = () => {
       </h1>
       <p className="text-sm text-[#4A5C78] mb-4">{t.subAuto}</p>
 
+      <DepartmentsStatus />
+
       {/* Recommended highlight */}
-      <div
-        className="bg-white rounded-3xl shadow-lg border-2 p-5 mb-4 flex items-center gap-4 cursor-pointer transition-all"
-        style={{ borderColor: recommended.color }}
-        onClick={() => selectDept(recommended)}
-      >
-        <span className="text-4xl">{recommended.icon}</span>
-        <div className="flex-1">
-          <p className="text-xl font-bold text-[#1A2B4A]"
-            style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>
-            {ta ? recommended.ta : recommended.en}
-          </p>
-          <p className="text-sm text-[#4A5C78]">{recommended.room} · ~{recommended.waitMins} min wait</p>
+      {recommended && (
+        <div
+          className="bg-white rounded-3xl shadow-lg border-2 p-5 mb-4 flex items-center gap-4 cursor-pointer transition-all"
+          style={{ borderColor: recommended.color }}
+          onClick={() => selectDept(recommended)}
+        >
+          <span className="text-4xl">{recommended.icon}</span>
+          <div className="flex-1">
+            <p className="text-xl font-bold text-[#1A2B4A]"
+              style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>
+              {deptLabel(recommended, language)}
+            </p>
+            <p className="text-sm text-[#4A5C78]">
+              {recommended.room}
+              {recommended.avg_wait_mins > 0 ? ` · ~${recommended.avg_wait_mins} min / patient` : ''}
+            </p>
+          </div>
+          {triage.deptId === recommended.id && (
+            <CheckCircle size={28} style={{ color: recommended.color }} />
+          )}
         </div>
-        {triage.deptId === recommended.id && (
-          <CheckCircle size={28} style={{ color: recommended.color }} />
-        )}
-      </div>
+      )}
 
       {/* ── Doctor Picker ── */}
       <div className="bg-white rounded-3xl shadow-md border border-[#DDE4EE] p-5 mb-4">
@@ -208,7 +225,7 @@ const Department: React.FC = () => {
       {/* All departments grid */}
       <p className="text-xs font-semibold text-[#8A9BB5] uppercase tracking-widest mb-3">{t.subManual}</p>
       <div className="grid grid-cols-2 gap-3 flex-1">
-        {DEPARTMENTS.filter((d: DepartmentData) => d.id !== 'emergency').map((dept: DepartmentData) => (
+        {selectableDepts.map((dept) => (
           <button
             key={dept.id}
             onClick={() => selectDept(dept)}
@@ -224,7 +241,7 @@ const Department: React.FC = () => {
             <div className="min-w-0">
               <p className="text-sm font-semibold text-[#1A2B4A] truncate"
                 style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>
-                {ta ? dept.ta : dept.en}
+                {deptLabel(dept, language)}
               </p>
               <p className="text-xs text-[#8A9BB5]">{dept.room}</p>
             </div>
@@ -242,8 +259,8 @@ const Department: React.FC = () => {
             px-6 py-4 rounded-2xl font-semibold hover:border-[#2E7D96] transition-all">
           <ChevronLeft size={20} /> {t.back}
         </button>
-        <button onClick={confirm}
-          className="flex-1 bg-[#2E7D96] hover:bg-[#236d84] text-white py-4 rounded-2xl
+        <button onClick={confirm} disabled={!selected}
+          className="flex-1 bg-[#2E7D96] hover:bg-[#236d84] disabled:opacity-40 text-white py-4 rounded-2xl
             text-lg font-bold flex items-center justify-center gap-3 shadow-lg active:scale-95 transition-all">
           <ChevronRight size={22} /> {t.confirm}
         </button>

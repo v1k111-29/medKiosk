@@ -1,6 +1,9 @@
+import logging
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
-from starlette.exceptions import HTTPException as StarletteHTTPException
+
+logger = logging.getLogger("kiosk.errors")
 
 class KioskError(Exception):
     def __init__(self, message_en: str, message_ta: str, status_code: int = 400):
@@ -21,8 +24,7 @@ async def kiosk_exception_handler(request: Request, exc: KioskError):
     )
 
 async def global_exception_handler(request: Request, exc: Exception):
-    # Log the real error for the developer
-    print(f"[ERROR] Global Catch: {str(exc)}")
+    logger.exception("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
     return JSONResponse(
         status_code=500,
         content={

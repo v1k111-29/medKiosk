@@ -1,30 +1,36 @@
 @echo off
+setlocal
+cd /d "%~dp0"
+
 echo.
-echo   Hospital Kiosk - Windows Startup
+echo   medKiosk - Windows Startup
 echo   ----------------------------------
 
-REM ── Load .env file if it exists ──────────────────────────────────────────
-if exist .env (
-    echo   Loading environment from .env ...
-    for /f "usebackq tokens=1,2 delims==" %%A in (`findstr /v "^#" .env`) do (
-        if not "%%A"=="" set "%%A=%%B"
-    )
-) else (
+REM Settings (.env) are read by the app itself (app/core/config.py).
+if not exist .env (
     echo.
-    echo   [WARN] No .env file found^^!
+    echo   [WARN] No .env file found - using dev defaults.
     echo   Copy .env.example to .env and add your GROQ_API_KEY.
-    echo   Free key: https://console.groq.com
     echo.
 )
 
-REM ── Install dependencies ─────────────────────────────────────────────────
+REM Use the project virtualenv if present
+if exist .venv\Scripts\activate.bat call .venv\Scripts\activate.bat
+
 echo   Installing / verifying dependencies...
-pip install -r requirements.txt -q
+python -m pip install -r requirements.txt -q || goto :error
+
+echo   Applying database migrations...
+python -m alembic upgrade head || goto :error
 
 echo.
-echo   Starting server at http://localhost:8000
-echo   Open http://localhost:8000 in your browser
+echo   Starting server at http://localhost:8000  (single worker)
 echo.
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+goto :eof
 
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+:error
+echo.
+echo   [ERROR] Startup failed - see messages above.
 pause
+exit /b 1

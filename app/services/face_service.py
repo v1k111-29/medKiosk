@@ -25,6 +25,8 @@ from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from app.core.config import settings
+
 logger = logging.getLogger("kiosk.face")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -35,17 +37,17 @@ ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "BMP"}
 # Same person across angles/lighting: typically 0.10–0.42
 # Different people:                   0.50–1.0
 # 0.45 gives a comfortable same-person margin while rejecting impostors.
-MATCH_THRESHOLD       = float(os.getenv("FACE_MATCH_THRESHOLD", "0.45"))
+MATCH_THRESHOLD       = settings.FACE_MATCH_THRESHOLD
 
 # Maximum embeddings to store per patient (multi-shot gallery)
-MAX_GALLERY_SIZE      = int(os.getenv("FACE_GALLERY_SIZE", "5"))
+MAX_GALLERY_SIZE      = settings.FACE_GALLERY_SIZE
 
 _deepface = None
 executor  = ThreadPoolExecutor(max_workers=4)
 
 
 def get_df():
-    """Lazy-load DeepFace."""
+    """Lazy-load DeepFace (heavy: TensorFlow). Raises ImportError if not installed."""
     global _deepface
     if _deepface is None:
         os.environ["TF_CPP_MIN_LOG_LEVEL"]  = "3"

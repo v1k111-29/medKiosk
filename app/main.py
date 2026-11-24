@@ -1,28 +1,53 @@
 """
-Hospital Kiosk — FastAPI unified backend.
+Hospital Kiosk — FastAPI backend.
 
 Entry point: uvicorn app.main:app --host 0.0.0.0 --port 8000
+(single worker: the realtime hub is in-process — see app/services/realtime.py)
 
 Features:
-- Face recognition (ArcFace via DeepFace)
-- Voice transcription (Whisper)
-- Conversational AI registration & triage (Ollama)
-- Medical vitals recording
+- Face recognition (ArcFace via DeepFace, loaded lazily)
+- Voice transcription (Groq Whisper)
+- Conversational registration & triage (Groq LLM)
+- Medical vitals, sequential department tokens, staff queue, display board, websockets
 """
 
+import asyncio
+import importlib.util
 import logging
 import sys
-from pathlib import Path
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func, select
 
-from app.core.database import init_db, seed_doctors
-from app.routers import face, voice, medical, conversation
-from app.core.errors import KioskError, kiosk_exception_handler, global_exception_handler
+from app.core.config import settings
+from app.core.database import run_migrations, session_scope
+from app.core.errors import KioskError, global_exception_handler, kiosk_exception_handler
+from app.core.models import Patient
+from app.core.seed import seed_all
+from app.routers import (
+    admin,
+    appointment,
+    auth,
+    conversation,
+    departments,
+    display,
+    doctors,
+    face,
+    medical,
+    queue,
+    voice,
+    ws,
+)
+from app.services import groq_client
+from app.services.realtime import hub
+
+APP_VERSION = "3.0.0"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -33,141 +58,128 @@ logging.basicConfig(
 )
 logger = logging.getLogger("kiosk")
 
-# Suppress noisy libraries
-for lib in ("deepface", "tensorflow", "absl", "httpx"):
+for lib in ("deepface", "tensorflow", "absl", "httpx", "httpcore", "alembic.runtime.plugins"):
     logging.getLogger(lib).setLevel(logging.WARNING)
+
+
+def _deepface_installed() -> bool:
+    return importlib.util.find_spec("deepface") is not None
+
+
+def _warm_arcface() -> None:
+    import numpy as np
+
+    from app.services.face_service import get_df
+
+    get_df().represent(
+        img_path=np.zeros((112, 112, 3), dtype=np.uint8),
+        model_name="ArcFace",
+        detector_backend="skip",
+        enforce_detection=False,
+    )
+
+
+def _startup_db() -> None:
+    run_migrations()
+    with session_scope() as session:
+        seed_all(session)
 
 
 # ── Lifespan (startup/shutdown) ───────────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application startup and shutdown."""
-    logger.info("=" * 50)
-    logger.info("  Hospital Kiosk — Starting Up")
-    logger.info("=" * 50)
+    logger.info("Hospital Kiosk %s starting (ENV=%s)", APP_VERSION, settings.ENV)
 
-    # 1. Initialize database
-    init_db()
-    seed_doctors()
+    # 1. Configuration (fails fast on unsafe prod config)
+    settings.validate_for_startup()
 
-    # 2. Pre-warm face recognition model
-    try:
-        import numpy as np
-        from app.services.face_service import get_df
-        logger.info("[AI] Warming up ArcFace model...")
-        dummy = np.zeros((112, 112, 3), dtype=np.uint8)
-        get_df().represent(
-            img_path=dummy,
-            model_name="ArcFace",
-            detector_backend="skip",
-            enforce_detection=False,
-        )
-        logger.info("[AI] [OK] ArcFace model ready")
-    except Exception as e:
-        logger.warning(f"[AI] ArcFace warmup note: {e}")
+    # 2. Database: Alembic migrations + idempotent seed
+    await run_in_threadpool(_startup_db)
 
-    # 3. Check Groq Whisper availability (cloud API — no model to load)
-    from app.services.voice_service import is_whisper_available, GROQ_WHISPER_MODEL
-    if is_whisper_available():
-        logger.info(f"[AI] [OK] Groq Whisper ready (model: {GROQ_WHISPER_MODEL})")
+    # 3. Realtime hub + shared Groq HTTP client
+    hub.bind_loop(asyncio.get_running_loop())
+    await groq_client.open_client()
+
+    # 4. Face recognition warm-up (optional dependency)
+    if _deepface_installed():
+        try:
+            logger.info("[AI] Warming up ArcFace model...")
+            await run_in_threadpool(_warm_arcface)
+            logger.info("[AI] ArcFace model ready")
+        except Exception as e:
+            logger.warning("[AI] ArcFace warmup failed: %s", e)
     else:
-        logger.warning(
-            "[AI] [WARN] GROQ_API_KEY not set -- voice transcription unavailable. "
-            "Get a free key at https://console.groq.com and set GROQ_API_KEY env var."
-        )
+        logger.warning("[AI] deepface not installed — /identify will fail; other routes work")
 
-    # 4. Check Groq LLM availability
-    from app.services.llm_service import (
-        check_ollama_health, check_ollama_model, warmup_ollama, GROQ_MODEL
-    )
-    groq_ok = await check_ollama_health()  # alias: checks Groq API key + reachability
-    if groq_ok:
-        model_info = await check_ollama_model()
-        if model_info["available"]:
-            logger.info(f"[AI] [OK] Groq LLM ready (model: {GROQ_MODEL})")
-            await warmup_ollama()  # alias: no-op for Groq (no warmup needed)
+    # 5. Groq availability
+    from app.services.llm_service import check_groq_health
+
+    if not groq_client.is_configured():
+        logger.warning("[AI] GROQ_API_KEY not set — transcription and conversational AI unavailable")
+    else:
+        health = await check_groq_health()
+        if health["ok"]:
+            logger.info("[AI] Groq ready (chat=%s, triage=%s, whisper=%s)",
+                        settings.GROQ_MODEL, settings.GROQ_TRIAGE_MODEL, settings.GROQ_WHISPER_MODEL)
         else:
-            logger.warning(
-                f"[AI] [WARN] Groq not available: {model_info.get('error', 'unknown error')}"
-            )
-    else:
-        logger.warning(
-            "[AI] [WARN] Groq API unreachable -- conversational AI unavailable. "
-            "Check GROQ_API_KEY at https://console.groq.com"
-        )
+            logger.warning("[AI] Groq not reachable: %s", health.get("error"))
 
-    logger.info("=" * 50)
-    logger.info("  [OK] Server ready -- http://localhost:8000")
-    logger.info("=" * 50)
-
+    logger.info("Server ready")
     yield
 
-    logger.info("Hospital Kiosk — Shutting down.")
+    await groq_client.close_client()
+    logger.info("Hospital Kiosk shutting down.")
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(
-    title="Hospital Kiosk API",
-    version="2.0.0",
-    lifespan=lifespan,
-)
+app = FastAPI(title="Hospital Kiosk API", version=APP_VERSION, lifespan=lifespan)
 
-# Exception handlers
 app.add_exception_handler(KioskError, kiosk_exception_handler)
 app.add_exception_handler(Exception, global_exception_handler)
 
-# CORS — restrict in production via KIOSK_CORS_ORIGINS env var
-import os
-cors_origins = os.getenv("KIOSK_CORS_ORIGINS", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=settings.cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(face.router)
-app.include_router(voice.router)
-app.include_router(medical.router)
-app.include_router(conversation.router)
-
-from app.routers import appointment
-from app.routers import doctors
-app.include_router(appointment.router)
-app.include_router(doctors.router)
+for r in (face, voice, medical, conversation, appointment, doctors, departments,
+          auth, admin, queue, display, ws):
+    app.include_router(r.router)
 
 
 # ── Health Check ──────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
-    """Comprehensive health check for all services."""
-    from app.services.llm_service import check_ollama_health
+    from app.services.llm_service import check_groq_health
     from app.services.voice_service import is_whisper_available
-    from app.core.database import get_db
 
-    # DB health
-    db_ok = True
-    patient_count = 0
+    def _db_check():
+        with session_scope() as session:
+            return session.scalar(select(func.count()).select_from(Patient))
+
+    db_ok, patient_count = True, 0
     try:
-        with get_db() as conn:
-            patient_count = conn.execute("SELECT COUNT(*) FROM patients").fetchone()[0]
+        patient_count = await run_in_threadpool(_db_check)
     except Exception:
         db_ok = False
 
-    # Ollama health
-    ollama_ok = await check_ollama_health()
+    llm_ok = (await check_groq_health())["ok"] if groq_client.is_configured() else False
 
     return {
-        "status": "ok",
-        "version": "2.0.0",
+        "status": "ok" if db_ok else "degraded",
+        "version": APP_VERSION,
+        "env": settings.ENV,
         "services": {
             "database": {"ok": db_ok, "patients": patient_count},
-            "face_recognition": True,
+            "face_recognition": _deepface_installed(),
             "whisper": is_whisper_available(),
-            "ollama": ollama_ok,
+            "llm": llm_ok,
+            "realtime": {"staff": hub.count("staff"), "display": hub.count("display")},
         },
-        "plugins": ["face", "voice", "medical", "conversation"],
+        "plugins": ["face", "voice", "medical", "conversation", "queue", "display"],
     }
 
 
@@ -176,7 +188,6 @@ BASE_DIR = Path(__file__).parent.parent.resolve()
 STATIC_DIR = BASE_DIR / "static"
 
 if STATIC_DIR.exists():
-    # Mount assets subdirectory
     assets_dir = STATIC_DIR / "assets"
     if assets_dir.exists():
         app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
@@ -184,14 +195,12 @@ if STATIC_DIR.exists():
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
         """Serve the React SPA with client-side routing support."""
-        file_path = STATIC_DIR / full_path
-        if file_path.is_file():
+        file_path = (STATIC_DIR / full_path).resolve()
+        if file_path.is_file() and STATIC_DIR in file_path.parents:
             return FileResponse(file_path)
-
         index_file = STATIC_DIR / "index.html"
         if index_file.exists():
             return HTMLResponse(content=index_file.read_text(encoding="utf-8"))
-
         return HTMLResponse(
             content="<h1>Frontend not found. Run: cd frontend && npm run build</h1>",
             status_code=404,

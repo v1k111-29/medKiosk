@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { fetchDepartments, Department, BookingResult, Urgency } from '../services/api';
 
 export type KioskStep =
   | 'SPLASH'
@@ -27,10 +28,7 @@ export interface TriageData {
   service: 'symptoms' | 'appointment' | 'followup' | 'emergency' | null;
   symptoms: string;
   deptId: string;
-  deptName: string;
-  deptNameTa: string;
-  room: string;
-  waitMins: number;
+  urgency: Urgency;
   doctorId: number | null;
   doctorName: string;
 }
@@ -53,7 +51,13 @@ interface KioskState {
   tempGender: string | null;
   triage: TriageData;
   vitals: VitalsData;
-  token: string;
+  /** Server-issued booking (token, room, queue position...). Null until booked. */
+  booking: BookingResult | null;
+  smsOptIn: boolean;
+
+  departments: Department[];
+  departmentsStatus: 'idle' | 'loading' | 'ready' | 'error';
+  loadDepartments: (force?: boolean) => Promise<void>;
 
   setStep: (s: KioskStep) => void;
   setLanguage: (l: 'en' | 'ta') => void;
@@ -62,7 +66,8 @@ interface KioskState {
   setTempGender: (g: string | null) => void;
   setTriage: (t: Partial<TriageData>) => void;
   setVitals: (v: Partial<VitalsData>) => void;
-  setToken: (t: string) => void;
+  setBooking: (b: BookingResult | null) => void;
+  setSmsOptIn: (v: boolean) => void;
   reset: () => void;
 }
 
@@ -70,10 +75,7 @@ const defaultTriage: TriageData = {
   service: null,
   symptoms: '',
   deptId: '',
-  deptName: '',
-  deptNameTa: '',
-  room: '',
-  waitMins: 15,
+  urgency: 'normal',
   doctorId: null,
   doctorName: '',
 };
@@ -83,7 +85,7 @@ const defaultVitals: VitalsData = {
   diabetes: false, hypertension: false,
 };
 
-export const useKioskStore = create<KioskState>((set) => ({
+export const useKioskStore = create<KioskState>((set, get) => ({
   step: 'SPLASH',
   language: 'en',
   patient: null,
@@ -91,7 +93,23 @@ export const useKioskStore = create<KioskState>((set) => ({
   tempGender: null,
   triage: defaultTriage,
   vitals: defaultVitals,
-  token: '',
+  booking: null,
+  smsOptIn: false,
+
+  departments: [],
+  departmentsStatus: 'idle',
+  loadDepartments: async (force = false) => {
+    const { departmentsStatus } = get();
+    if (departmentsStatus === 'loading') return;
+    if (departmentsStatus === 'ready' && !force) return;
+    set({ departmentsStatus: 'loading' });
+    try {
+      const departments = await fetchDepartments();
+      set({ departments, departmentsStatus: 'ready' });
+    } catch {
+      set({ departmentsStatus: 'error' });
+    }
+  },
 
   setStep: (step) => set({ step }),
   setLanguage: (language) => set({ language }),
@@ -100,7 +118,8 @@ export const useKioskStore = create<KioskState>((set) => ({
   setTempGender: (tempGender) => set({ tempGender }),
   setTriage: (t) => set((s) => ({ triage: { ...s.triage, ...t } })),
   setVitals: (v) => set((s) => ({ vitals: { ...s.vitals, ...v } })),
-  setToken: (token) => set({ token }),
+  setBooking: (booking) => set({ booking }),
+  setSmsOptIn: (smsOptIn) => set({ smsOptIn }),
   reset: () => set({
     step: 'SPLASH',
     patient: null,
@@ -108,6 +127,17 @@ export const useKioskStore = create<KioskState>((set) => ({
     tempGender: null,
     triage: defaultTriage,
     vitals: defaultVitals,
-    token: '',
+    booking: null,
+    smsOptIn: false,
   }),
 }));
+
+/** Look up a department from the cached API list. */
+export function findDepartment(departments: Department[], id: string): Department | undefined {
+  return departments.find((d) => d.id === id);
+}
+
+export function deptLabel(d: Department | undefined, lang: 'en' | 'ta'): string {
+  if (!d) return '';
+  return lang === 'ta' ? d.name_ta : d.name_en;
+}

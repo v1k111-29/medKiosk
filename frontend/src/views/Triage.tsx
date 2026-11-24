@@ -3,7 +3,7 @@ import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
 import { useVoiceTriage } from '../hooks/useVoiceTriage';
 import { Mic, Send, Loader2, ChevronLeft, Square, AlertTriangle } from 'lucide-react';
-import { detectDept } from '../data/departments';
+import { detectDeptId } from '../data/departments';
 
 const L = {
   en: {
@@ -55,14 +55,11 @@ const Triage: React.FC = () => {
     setLoading(true);
     speak(language === 'ta' ? 'அறிகுறிகள் பகுப்பாய்வு செய்யப்படுகின்றன.' : 'Analysing your symptoms.');
     setTimeout(() => {
-      const dept = detectDept(transcription);
+      // Keyword match only picks the dept id; name/room/wait come from GET /departments.
       setTriage({
         symptoms: transcription,
-        deptId: dept.id,
-        deptName: dept.en,
-        deptNameTa: dept.ta,
-        room: dept.room,
-        waitMins: dept.waitMins,
+        deptId: detectDeptId(transcription),
+        urgency: 'normal',
       });
       setLoading(false);
       setStep('DEPARTMENT');

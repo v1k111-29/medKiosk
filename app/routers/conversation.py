@@ -7,20 +7,41 @@ Three conversation modes:
 - /conversation/chat     : General conversation / Q&A
 """
 
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
-from typing import Optional, List, Dict, Any
 import logging
+from typing import Any, Dict, List, Optional
 
-from app.services.llm_service import (
-    call_llm_registration,
-    call_llm_triage,
-    call_llm_general,
-)
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field
+
+from app.core.database import session_scope
+from app.core.security import require_kiosk
+from app.services.llm_service import call_llm_general, call_llm_registration, call_llm_triage
+from app.services.queue_service import departments_map, waiting_counts
 
 logger = logging.getLogger("kiosk.conversation")
 
-router = APIRouter(prefix="/conversation", tags=["Conversational AI"])
+router = APIRouter(prefix="/conversation", tags=["Conversational AI"], dependencies=[Depends(require_kiosk)])
+
+
+def _load_departments() -> dict[str, dict]:
+    """Active departments from the DB, with a queue-based wait estimate."""
+    with session_scope() as session:
+        counts = waiting_counts(session)
+        out = {}
+        for dept_id, d in departments_map(session, active_only=True).items():
+            out[dept_id] = {
+                "name_en": d.name_en,
+                "name_ta": d.name_ta,
+                "room": d.room,
+                "wait_mins": 0 if dept_id == "emergency" else counts.get(dept_id, 0) * d.avg_wait_mins,
+            }
+        return out
+
+
+async def _triage(text: str) -> dict:
+    departments = await run_in_threadpool(_load_departments)
+    return await call_llm_triage(text, departments)
 
 
 # ── Request/Response Schemas ──────────────────────────────────────────────────
@@ -68,6 +89,7 @@ class TriageResponse(BaseModel):
     service:    str = "symptoms"
     dept_id:    Optional[str] = None
     dept_name:  Optional[str] = None
+    dept_name_ta: Optional[str] = None
     room:       Optional[str] = None
     wait_mins:  int = 15
     # legacy field kept for backward compat
@@ -108,7 +130,7 @@ async def conversation_register(req: RegisterConversationRequest):
     if not req.text.strip():
         raise HTTPException(400, "Empty text provided")
 
-    logger.info(f"[Conversation/Register] Input: '{req.text[:100]}'")
+    logger.info("[Conversation/Register] input chars=%d history=%d", len(req.text), len(req.history))
 
     # Convert history to dicts for the LLM service
     history_dicts = [{"role": m.role, "content": m.content} for m in req.history]
@@ -120,8 +142,8 @@ async def conversation_register(req: RegisterConversationRequest):
     )
 
     logger.info(
-        f"[Conversation/Register] Extracted: {result.get('extracted', {})} "
-        f"| all_collected: {result.get('all_collected', False)}"
+        "[Conversation/Register] extracted_fields=%s all_collected=%s",
+        sorted(result.get("extracted", {}).keys()), result.get("all_collected", False),
     )
 
     return RegisterConversationResponse(**result)
@@ -143,15 +165,15 @@ async def conversation_triage(req: TriageRequest):
 
     if req.language not in ("en", "auto"):
         # For non-English, we still try but warn
-        logger.info(f"[Conversation/Triage] Non-English input (lang={req.language})")
+        logger.info("[Conversation/Triage] Non-English input (lang=%s)", req.language)
 
-    logger.info(f"[Conversation/Triage] Input: '{req.text[:100]}'")
+    logger.info("[Conversation/Triage] input chars=%d", len(req.text))
 
-    result = await call_llm_triage(req.text)
+    result = await _triage(req.text)
 
     logger.info(
-        f"[Conversation/Triage] → dept_id={result.get('dept_id')} "
-        f"urgency={result.get('urgency')} conf={result.get('confidence')}"
+        "[Conversation/Triage] -> dept_id=%s urgency=%s conf=%s",
+        result.get("dept_id"), result.get("urgency"), result.get("confidence"),
     )
 
     return TriageResponse(**{k: v for k, v in result.items() if k in TriageResponse.model_fields})
@@ -192,4 +214,4 @@ async def conversation_legacy(req: LegacyConversationRequest):
             "reply": "I currently only support conversational triage in English. Please use the touch menu.",
         }
 
-    return await call_llm_triage(req.text)
+    return await _triage(req.text)

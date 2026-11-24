@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
-import { useKioskStore } from '../store/useKioskStore';
+import { useKioskStore, TriageData } from '../store/useKioskStore';
+import DepartmentsStatus from '../components/DepartmentsStatus';
 import { useTTS } from '../hooks/useVoice';
 import { Stethoscope, Calendar, RefreshCw, LogOut, ChevronRight, Bot } from 'lucide-react';
 
@@ -39,7 +40,7 @@ const MainMenu: React.FC = () => {
   useEffect(() => { speak(t.tts(first)); }, []);
 
   const select = (key: string) => {
-    setTriage({ service: key as any });
+    setTriage({ service: key as NonNullable<TriageData['service']> });
     speak(language === 'ta' ? 'சரி. துறையை தேர்ந்தெடுக்கவும்.' : 'Got it. Please select a department.');
     if (key === 'symptoms' || key === 'followup') setStep('TRIAGE');
     else setStep('DEPARTMENT');
@@ -65,6 +66,9 @@ const MainMenu: React.FC = () => {
           <LogOut size={18} /> {t.logout}
         </button>
       </header>
+
+      {/* Department list is loaded from the API; surface failures early with retry */}
+      <DepartmentsStatus />
 
       {/* Service cards */}
       <div className="grid grid-cols-1 gap-5 flex-1">
