@@ -8,6 +8,7 @@ department details are resolved from the `departments` table by the caller.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Optional
@@ -211,12 +212,25 @@ async def _call_groq(
     raw_text = ""
     try:
         client = await groq_client.get_client()
-        response = await client.post(
-            groq_client.GROQ_CHAT_URL,
-            json=payload,
-            headers=groq_client.auth_headers(),
-            timeout=settings.GROQ_TIMEOUT,
-        )
+        for attempt in range(2):
+            response = await client.post(
+                groq_client.GROQ_CHAT_URL,
+                json=payload,
+                headers=groq_client.auth_headers(),
+                timeout=settings.GROQ_TIMEOUT,
+            )
+            # One short retry on rate limit (patient is waiting at the kiosk:
+            # never wait more than 3 s; after that the rule engine takes over).
+            if response.status_code == 429 and attempt == 0:
+                try:
+                    wait = float(response.headers.get("retry-after", "1"))
+                except ValueError:
+                    wait = 1.0
+                wait = min(max(wait, 0.5), 3.0)
+                logger.warning("[LLM] Groq rate limit hit; retrying once in %.1fs", wait)
+                await asyncio.sleep(wait)
+                continue
+            break
         response.raise_for_status()
         raw_text = response.json()["choices"][0]["message"]["content"]
         return json.loads(raw_text)
