@@ -141,6 +141,7 @@ const Confirmation: React.FC = () => {
             type="button"
             role="switch"
             aria-checked={smsOptIn}
+            aria-label={en("sms_toggle", { phone: maskPhone(phone) })}
             onClick={() => setSmsOptIn(!smsOptIn)}
             className={`w-full max-w-md flex items-center gap-4 p-5 rounded-3xl border-4 text-left mb-5 transition-all active:scale-95
               ${smsOptIn ? 'bg-[#E8F5E9] border-[#1F7A5C]' : 'bg-white border-[#DDE4EE]'}`}

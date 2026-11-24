@@ -80,7 +80,7 @@ const Conversation: React.FC = () => {
     welcomeSpokenRef.current = true;
     const name = patient?.name?.split(' ')[0] || 'there';
     const welcome =
-      `Welcome back, ${name}! I'm your AI assistant. ` +
+      `${(patient?.visits ?? 0) > 1 ? 'Welcome back' : 'Welcome'}, ${name}! I'm your AI assistant. ` +
       `Please tell me your symptoms or say which department you'd like to visit, ` +
       `and I'll book your appointment right away.`;
     addMessage('ai', welcome);

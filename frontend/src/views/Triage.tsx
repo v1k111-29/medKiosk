@@ -166,6 +166,7 @@ const Triage: React.FC = () => {
 
         <button
           onClick={handleMicToggle}
+          aria-label={isRecording ? "Stop recording" : "Tap to speak"}
           disabled={isProcessing}
           className={`flex-1 flex items-center justify-center gap-3 py-4 rounded-2xl text-lg font-bold
             transition-all border-2 relative overflow-hidden ${isRecording

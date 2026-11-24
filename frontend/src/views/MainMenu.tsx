@@ -6,7 +6,7 @@ import { Stethoscope, Calendar, RefreshCw, LogOut, ChevronRight, Bot } from 'luc
 
 const L = {
   en: {
-    greeting: (n: string) => `Welcome back, ${n}`,
+    greeting: (n: string, returning = true) => `${returning ? 'Welcome back' : 'Welcome'}, ${n}`,
     meta: (g: string, a: number|undefined, v: number|undefined) =>
       `${g}${a ? ` · Age ${a}` : ''} · Visits: ${v ?? 1}`,
     cards: [
@@ -15,10 +15,10 @@ const L = {
       { key: 'followup',    icon: RefreshCw,   label: 'Follow-up Visit',      sub: 'Continue ongoing treatment',color: '#7B5EA7', border: '#7B5EA7' },
     ],
     logout: 'Exit',
-    tts: (n: string) => `Welcome back, ${n}. Please choose a service.`,
+    tts: (n: string, returning = true) => `${returning ? 'Welcome back' : 'Welcome'}, ${n}. Please choose a service.`,
   },
   ta: {
-    greeting: (n: string) => `மீண்டும் வருக, ${n}`,
+    greeting: (n: string, returning = true) => `${returning ? 'மீண்டும் வருக' : 'வருக'}, ${n}`,
     meta: (g: string, a: number|undefined, v: number|undefined) =>
       `${g}${a ? ` · வயது ${a}` : ''} · வருகைகள்: ${v ?? 1}`,
     cards: [
@@ -27,7 +27,7 @@ const L = {
       { key: 'followup',    icon: RefreshCw,   label: 'மறு சந்திப்பு',      sub: 'நடந்து வரும் சிகிச்சையை தொடரவும்',    color: '#7B5EA7', border: '#7B5EA7' },
     ],
     logout: 'வெளியேறு',
-    tts: (n: string) => `மீண்டும் வருக, ${n}. சேவையை தேர்ந்தெடுக்கவும்.`,
+    tts: (n: string, returning = true) => `${returning ? 'மீண்டும் வருக' : 'வருக'}, ${n}. சேவையை தேர்ந்தெடுக்கவும்.`,
   },
 };
 
@@ -37,7 +37,10 @@ const MainMenu: React.FC = () => {
   const t = L[language];
   const first = patient?.name?.split(' ')[0] || 'Patient';
 
-  useEffect(() => { speak(t.tts(first)); }, []);
+  // Just-registered patients have no visit count yet; returning ones have >= 2.
+  const returning = (patient?.visits ?? 0) > 1;
+
+  useEffect(() => { speak(t.tts(first, returning)); }, []);
 
   const select = (key: string) => {
     setTriage({ service: key as NonNullable<TriageData['service']> });
@@ -55,7 +58,7 @@ const MainMenu: React.FC = () => {
         <div>
           <h1 className="text-4xl font-black text-[#1A2B4A] leading-tight"
             style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>
-            {t.greeting(first)}
+            {t.greeting(first, returning)}
           </h1>
           <p className="text-base text-[#4A5C78] mt-1">
             {t.meta(patient?.gender||'', patient?.age, patient?.visits)}

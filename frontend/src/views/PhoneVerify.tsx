@@ -224,7 +224,7 @@ const PhoneVerify: React.FC = () => {
 
           <div className="flex flex-col items-center gap-3 mt-6 w-full max-w-sm">
             {phase === 'phone' ? (
-              <button onClick={sendCode} disabled={busy || !validPhone}
+              <button onClick={sendCode} disabled={busy || !validPhone} aria-label={t("phone_send")}
                 className="w-full bg-[#2E7D96] hover:bg-[#236d84] disabled:opacity-40 text-white py-5 rounded-2xl text-2xl font-bold
                   shadow-lg active:scale-95 transition-all flex items-center justify-center gap-3">
                 {busy ? <Loader2 className="animate-spin" /> : null}
@@ -232,7 +232,7 @@ const PhoneVerify: React.FC = () => {
               </button>
             ) : (
               <>
-                <button onClick={() => verify(otp)} disabled={busy || otp.length !== OTP_LEN}
+                <button onClick={() => verify(otp)} disabled={busy || otp.length !== OTP_LEN} aria-label={t("otp_verify")}
                   className="w-full bg-[#2E7D96] hover:bg-[#236d84] disabled:opacity-40 text-white py-5 rounded-2xl text-2xl font-bold
                     shadow-lg active:scale-95 transition-all flex items-center justify-center gap-3">
                   {busy ? <Loader2 className="animate-spin" /> : null}

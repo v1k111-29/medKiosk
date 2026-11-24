@@ -306,7 +306,7 @@ const Vitals: React.FC = () => {
           <label className={labelCls}>{t.history}</label>
           <div className="flex gap-4">
             {(['diabetes', 'hypertension'] as const).map(k => (
-              <button key={k} type="button"
+              <button key={k} type="button" aria-pressed={vitals[k]} aria-label={k === "diabetes" ? t.diabetes : t.hypertension}
                 onClick={() => setV(k, !vitals[k])}
                 className={`flex-1 flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${
                   vitals[k]
