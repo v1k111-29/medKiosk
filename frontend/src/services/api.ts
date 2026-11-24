@@ -139,9 +139,13 @@ export interface IdentifiedPatient {
   phone: string | null;
   visits: number | null;
   other_patients?: IdentifiedPatient[];
+  /** Present on the top-level verify result: lets the kiosk register another person on this number. */
+  phone_verification_token?: string;
 }
 
-export type PhoneVerifyResult = IdentifiedPatient | { status: 'new'; phone: string };
+export type PhoneVerifyResult =
+  | IdentifiedPatient
+  | { status: 'new'; phone: string; phone_verification_token: string };
 
 export async function phoneStart(phone: string): Promise<void> {
   await faceApi.post('/identify/phone/start', { phone });

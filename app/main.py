@@ -14,6 +14,7 @@ Features:
 import asyncio
 import importlib.util
 import logging
+import re
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -45,7 +46,7 @@ from app.routers import (
     voice,
     ws,
 )
-from app.services import groq_client
+from app.services import groq_client, otp_service
 from app.services.realtime import hub
 
 APP_VERSION = "3.0.0"
@@ -61,6 +62,40 @@ logger = logging.getLogger("kiosk")
 
 for lib in ("deepface", "tensorflow", "absl", "httpx", "httpcore", "alembic.runtime.plugins"):
     logging.getLogger(lib).setLevel(logging.WARNING)
+
+
+_TOKEN_QS = re.compile(r"((?:^|[?&])(?:token|access_token)=)[^&\s\"]*", re.IGNORECASE)
+
+
+def redact_tokens(text: str) -> str:
+    """Replace `token=` / `access_token=` query-string values with [REDACTED]."""
+    return _TOKEN_QS.sub(r"\1[REDACTED]", text)
+
+
+class RedactTokenFilter(logging.Filter):
+    """Keeps JWTs out of logs.
+
+    The staff WebSocket (`/ws/queue?token=<JWT>`) carries the token in the query string,
+    and uvicorn logs the full path in its access log ("uvicorn.access") and in its
+    WebSocket accept/reject lines ("uvicorn.error").
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str) and "token=" in record.msg.lower():
+            record.msg = redact_tokens(record.msg)
+        if record.args:
+            if isinstance(record.args, tuple):
+                record.args = tuple(redact_tokens(a) if isinstance(a, str) else a for a in record.args)
+            elif isinstance(record.args, dict):
+                record.args = {k: redact_tokens(v) if isinstance(v, str) else v for k, v in record.args.items()}
+        return True
+
+
+_redact_filter = RedactTokenFilter()
+for _name in ("uvicorn.access", "uvicorn.error", "uvicorn"):
+    _lg = logging.getLogger(_name)
+    if not any(isinstance(f, RedactTokenFilter) for f in _lg.filters):
+        _lg.addFilter(_redact_filter)
 
 
 def _deepface_installed() -> bool:
@@ -84,6 +119,10 @@ def _startup_db() -> None:
     run_migrations()
     with session_scope() as session:
         seed_all(session)
+    with session_scope() as session:
+        purged = otp_service.purge_expired(session)
+        if purged:
+            logger.info("[DB] Purged %d expired phone OTP row(s)", purged)
 
 
 # ── Lifespan (startup/shutdown) ───────────────────────────────────────────────

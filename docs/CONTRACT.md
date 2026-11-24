@@ -122,3 +122,11 @@ Existing: `/identify`, `/register`, `/transcribe`, `/conversation/*`, `/vitals`,
   - `POST /conversation/triage` request adds optional `patient_id`, `age`; response adds `escalation_reasons` [str], `red_flags` [code], `news2` (object|null), `disclaimer` {en, ta}. If the LLM fails, keyword routing + rules are used (intent `symptoms`).
   - `POST /appointment/book` recomputes urgency from `symptoms` + today's latest vitals + patient age; client urgency can be raised, never lowered. Response adds `escalation_reasons`. `appointments.escalation_reasons` TEXT (JSON list).
   - Vitals responses and queue items' `vitals` add `news2` (`{score, points, band, any_single_3, partial, missing}`); queue vitals add `resp_rate`; queue items add `escalation_reasons`. `POST /vitals` rejects implausible values (422).
+
+## Production hardening (batch 4)
+- `POST /identify/phone/verify` responses (both `new` and found shapes) add `phone_verification_token`: HS256 JWT `{typ:"phone_verification", phone:"+91…", exp}`, lifetime `PHONE_VERIFICATION_TOKEN_MINUTES` (15). It has no `sub`, so it is never a staff token. It can be reused within its lifetime, for example to register several family members on one number.
+- `POST /register` adds optional `phone_verification_token`. Unless `face_consent=true` **and** an `embedding` is sent, the token is required and `phone` must normalise to the token's phone. Otherwise the response is → 403 (bilingual message).
+- New settings (defaults = previous constants): `OTP_TTL_MINUTES=5`, `OTP_MAX_ATTEMPTS=5`, `OTP_RATE_LIMIT=3`, `OTP_RATE_WINDOW_MINUTES=10`, `PHONE_VERIFICATION_TOKEN_MINUTES=15`, `CONSENT_VERSION=v1-2026-11`, `CHILD_AGE_YEARS=14`.
+- `phone_otps` rows older than max(TTL, rate window) are purged on startup and at most once a minute on `/identify/phone/start`.
+- `token=` / `access_token=` query values are redacted in uvicorn access and error logs and in nginx logs.
+- Deployment: `docker-compose.yml` (db, backend, kiosk :8080, staff :8081). See `docs/DEPLOY.md`.

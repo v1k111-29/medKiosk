@@ -62,6 +62,8 @@ interface KioskState {
   faceConsent: boolean | null;
   /** 10-digit number verified by OTP (face opt-out path), prefilled on registration. */
   verifiedPhone: string | null;
+  /** Signed proof of OTP verification for verifiedPhone; /register requires it when no face is stored. */
+  phoneVerificationToken: string | null;
   triage: TriageData;
   vitals: VitalsData;
   /** Server-issued booking (token, room, queue position...). Null until booked. */
@@ -79,6 +81,7 @@ interface KioskState {
   setTempGender: (g: string | null) => void;
   setFaceConsent: (c: boolean | null) => void;
   setVerifiedPhone: (p: string | null) => void;
+  setPhoneVerificationToken: (t: string | null) => void;
   setTriage: (t: Partial<TriageData>) => void;
   setVitals: (v: Partial<VitalsData>) => void;
   setBooking: (b: BookingResult | null) => void;
@@ -110,6 +113,7 @@ export const useKioskStore = create<KioskState>((set, get) => ({
   tempGender: null,
   faceConsent: null,
   verifiedPhone: null,
+  phoneVerificationToken: null,
   triage: defaultTriage,
   vitals: defaultVitals,
   booking: null,
@@ -137,6 +141,7 @@ export const useKioskStore = create<KioskState>((set, get) => ({
   setTempGender: (tempGender) => set({ tempGender }),
   setFaceConsent: (faceConsent) => set({ faceConsent }),
   setVerifiedPhone: (verifiedPhone) => set({ verifiedPhone }),
+  setPhoneVerificationToken: (phoneVerificationToken) => set({ phoneVerificationToken }),
   setTriage: (t) => set((s) => ({ triage: { ...s.triage, ...t } })),
   setVitals: (v) => set((s) => ({ vitals: { ...s.vitals, ...v } })),
   setBooking: (booking) => set({ booking }),
@@ -148,6 +153,7 @@ export const useKioskStore = create<KioskState>((set, get) => ({
     tempGender: null,
     faceConsent: null,
     verifiedPhone: null,
+    phoneVerificationToken: null,
     triage: defaultTriage,
     vitals: defaultVitals,
     booking: null,

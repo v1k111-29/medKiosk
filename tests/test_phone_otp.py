@@ -7,7 +7,9 @@ from sqlalchemy import select
 
 from app.core.database import session_scope
 from app.core.models import FaceEmbedding, Patient, PhoneOtp
+from app.core.security import create_phone_verification_token, create_access_token, verified_phone_from_token
 from app.services import otp_service
+from app.services.sms import normalize_phone_in
 
 CODE = "123456"
 
@@ -25,9 +27,16 @@ def _verify(client, phone, otp=CODE):
     return client.post("/identify/phone/verify", json={"phone": phone, "otp": otp})
 
 
+DEFAULT_PHONE = "9876599999"
+
+
 def _register(client, **kw):
+    """Register; without a face template, attach a phone-verification token for the phone."""
     body = {"name": "Test Patient", "gender": "Woman", "age": 34, "face_consent": False}
     body.update(kw)
+    if not (body["face_consent"] and body.get("embedding")):
+        body.setdefault("phone", DEFAULT_PHONE)
+        body.setdefault("phone_verification_token", create_phone_verification_token(normalize_phone_in(body["phone"])))
     return client.post("/register", json=body)
 
 
@@ -60,7 +69,9 @@ def test_unknown_phone_verifies_as_new(client):
     assert _start(client, phone).status_code == 200
     r = _verify(client, phone)
     assert r.status_code == 200
-    assert r.json() == {"status": "new", "phone": "+919876500010"}
+    body = r.json()
+    assert {k: body[k] for k in ("status", "phone")} == {"status": "new", "phone": "+919876500010"}
+    assert verified_phone_from_token(body["phone_verification_token"]) == "+919876500010"
 
 
 def test_known_phone_verifies_as_found(client):
@@ -198,3 +209,84 @@ def test_admin_deletes_face_data(client, admin_headers):
         assert s.scalars(select(FaceEmbedding).where(FaceEmbedding.patient_id == pid)).first() is None
 
     assert client.delete("/patients/999999/face", headers=admin_headers).status_code == 404
+
+
+# ── /register phone-verification enforcement ──────────────────────────────────
+
+def _register_raw(client, **kw):
+    body = {"name": "Raw Patient", "age": 30, "face_consent": False}
+    body.update(kw)
+    return client.post("/register", json=body)
+
+
+def test_register_without_face_requires_phone_token(client):
+    r = _register_raw(client, phone="9876500100")
+    assert r.status_code == 403
+    r = _register_raw(client)  # no phone at all
+    assert r.status_code == 403
+
+
+def test_register_consent_without_embedding_still_requires_phone_token(client):
+    r = _register_raw(client, phone="9876500101", face_consent=True)
+    assert r.status_code == 403
+
+
+def test_register_rejects_token_for_other_phone(client):
+    token = create_phone_verification_token("+919876500102")
+    r = _register_raw(client, phone="9876500103", phone_verification_token=token)
+    assert r.status_code == 403
+
+
+def test_register_rejects_bad_or_expired_token(client, monkeypatch):
+    from app.core.config import settings
+
+    assert _register_raw(client, phone="9876500104", phone_verification_token="garbage").status_code == 403
+    monkeypatch.setattr(settings, "PHONE_VERIFICATION_TOKEN_MINUTES", -1)
+    expired = create_phone_verification_token("+919876500104")
+    assert _register_raw(client, phone="9876500104", phone_verification_token=expired).status_code == 403
+
+
+def test_staff_jwt_is_not_a_phone_token(client):
+    from app.core.models import User
+
+    with session_scope() as s:
+        admin = s.scalars(select(User).where(User.username == "admin")).first()
+        staff_token = create_access_token(admin)
+    assert verified_phone_from_token(staff_token) is None
+    r = _register_raw(client, phone="9876500105", phone_verification_token=staff_token)
+    assert r.status_code == 403
+
+
+def test_otp_flow_token_registers_patient(client):
+    phone = "9876500106"
+    _start(client, phone)
+    token = _verify(client, phone).json()["phone_verification_token"]
+    # Different formatting of the same number is accepted; stored as E.164. Reusable within its
+    # lifetime so a family sharing one number can register each member.
+    r1 = _register_raw(client, name="First", phone="+91 98765 00106", phone_verification_token=token)
+    r2 = _register_raw(client, name="Second", phone=phone, phone_verification_token=token)
+    assert r1.status_code == r2.status_code == 200
+    with session_scope() as s:
+        assert s.get(Patient, r1.json()["id"]).phone == "+919876500106"
+
+
+def test_found_response_includes_phone_token(client):
+    _register(client, name="Known", phone="9876500107")
+    _start(client, "9876500107")
+    body = _verify(client, "9876500107").json()
+    assert body["status"] == "found"
+    assert verified_phone_from_token(body["phone_verification_token"]) == "+919876500107"
+
+
+def test_purge_expired_keeps_rate_limit_window(client):
+    phone = "+919876500108"
+    with session_scope() as s:
+        now = otp_service.utcnow()
+        old = now - otp_service.OTP_RATE_WINDOW - timedelta(minutes=1)
+        recent = now - timedelta(minutes=6)  # expired code, but still inside the rate window
+        s.add(PhoneOtp(phone=phone, otp_hash="x" * 64, created_at=old, expires_at=old + otp_service.OTP_TTL))
+        s.add(PhoneOtp(phone=phone, otp_hash="y" * 64, created_at=recent, expires_at=recent + otp_service.OTP_TTL))
+    with session_scope() as s:
+        assert otp_service.purge_expired(s) >= 1
+        rows = s.scalars(select(PhoneOtp).where(PhoneOtp.phone == phone)).all()
+        assert [r.otp_hash for r in rows] == ["y" * 64]

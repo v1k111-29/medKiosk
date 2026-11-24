@@ -65,6 +65,36 @@ def decode_access_token(token: str) -> Optional[dict]:
         return None
 
 
+PHONE_TOKEN_TYPE = "phone_verification"
+
+
+def create_phone_verification_token(phone_e164: str) -> str:
+    """Short-lived proof that `phone_e164` passed OTP verification (required by /register
+    when no face template is enrolled). Has no `sub`, so it is never accepted as a staff token."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        "typ": PHONE_TOKEN_TYPE,
+        "phone": phone_e164,
+        "iat": now,
+        "exp": now + timedelta(minutes=settings.PHONE_VERIFICATION_TOKEN_MINUTES),
+    }
+    return jwt.encode(payload, settings.JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+def verified_phone_from_token(token: Optional[str]) -> Optional[str]:
+    """Return the E.164 phone a valid, unexpired phone-verification token is bound to, else None."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, settings.JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                             options={"require": ["exp", "typ", "phone"]})
+    except jwt.PyJWTError:
+        return None
+    if payload.get("typ") != PHONE_TOKEN_TYPE or not isinstance(payload.get("phone"), str):
+        return None
+    return payload["phone"]
+
+
 def user_from_token(session: Session, token: Optional[str]) -> Optional[User]:
     """Resolve an active user from a JWT, or None."""
     if not token:

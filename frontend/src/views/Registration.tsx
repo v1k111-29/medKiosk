@@ -82,7 +82,7 @@ const L = {
 };
 
 const Registration: React.FC = () => {
-  const { language, tempGender, tempEmbedding, faceConsent, verifiedPhone, setStep, setPatient } = useKioskStore();
+  const { language, tempGender, tempEmbedding, faceConsent, verifiedPhone, phoneVerificationToken, setStep, setPatient } = useKioskStore();
   // Face template is stored only if the visitor agreed on the CONSENT screen AND a face was captured.
   const storeFace = faceConsent === true && !!tempEmbedding;
   const [selectedGender, setSelectedGender] = useState<string>(tempGender || '');
@@ -195,10 +195,13 @@ const Registration: React.FC = () => {
     setLoading(true);
 
     try {
+      // Without a stored face, the server requires the OTP-verified number + its token.
+      const phone = storeFace ? (manualForm.phone || null) : verifiedPhone;
       const res = await faceApi.post('/register', {
         name,
         age: manualForm.age ? parseInt(manualForm.age) : null,
-        phone: manualForm.phone || null,
+        phone,
+        phone_verification_token: storeFace ? null : phoneVerificationToken,
         gender: selectedGender || 'Unknown',
         blood_group: manualForm.blood || null,
         city: manualForm.city || null,
@@ -212,7 +215,7 @@ const Registration: React.FC = () => {
           name,
           age: manualForm.age ? parseInt(manualForm.age) : undefined,
           gender: selectedGender || undefined,
-          phone: manualForm.phone || undefined,
+          phone: phone || undefined,
           blood_group: manualForm.blood || undefined,
           city: manualForm.city || undefined,
         });
@@ -413,7 +416,8 @@ const Registration: React.FC = () => {
                 <input
                   className={inputCls}
                   type="tel"
-                  value={manualForm.phone}
+                  value={storeFace ? manualForm.phone : (verifiedPhone ?? '')}
+                  readOnly={!storeFace}
                   onChange={e => updateManual('phone', e.target.value.replace(/\D/g, ''))}
                   placeholder="9876543210"
                 />

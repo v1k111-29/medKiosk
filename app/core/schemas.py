@@ -45,6 +45,11 @@ class PatientRegister(BaseModel):
     consent_version: Optional[str] = Field(
         None, description="Ignored — the server records its current consent text version"
     )
+    phone_verification_token: Optional[str] = Field(
+        None,
+        description="From POST /identify/phone/verify. Required unless face_consent=true with an "
+                    "embedding; `phone` must be the verified number.",
+    )
 
 
 class PatientRead(BaseModel):

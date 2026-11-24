@@ -71,7 +71,7 @@ const toPatient = (p: IdentifiedPatient): Patient => ({
 });
 
 const PhoneVerify: React.FC = () => {
-  const { language, setStep, setPatient, setVerifiedPhone, setTempEmbedding, setTempGender, reset } = useKioskStore();
+  const { language, setStep, setPatient, setVerifiedPhone, setPhoneVerificationToken, setTempEmbedding, setTempGender, reset } = useKioskStore();
   const { speak } = useTTS();
   const t = i18n.getFixedT(language);
   const [phase, setPhase] = useState<Phase>('phone');
@@ -121,6 +121,7 @@ const PhoneVerify: React.FC = () => {
     setBusy(true); setError('');
     try {
       const res = await phoneVerify(phone, code);
+      setPhoneVerificationToken(res.phone_verification_token ?? null);
       if (res.status === 'new') {
         registerNew();
         return;

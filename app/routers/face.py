@@ -14,6 +14,8 @@ Consent:
 - `/identify` with `match_only=true` (kiosk, before consent) never returns or stores
   anything for a non-match.
 - `/register` requires an explicit `face_consent`; the embedding is stored only when true.
+  Identity must be proven either by a face template (face_consent=true + embedding) or by a
+  `phone_verification_token` from `/identify/phone/verify` bound to the registered phone.
 - Visitors who decline identify by phone: `/identify/phone/start` + `/identify/phone/verify`.
 - Admins can withdraw face data with `DELETE /patients/{id}/face`.
 """
@@ -36,7 +38,12 @@ from app.core.database import get_session, session_scope
 from app.core.errors import KioskError
 from app.core.models import FaceEmbedding, Patient, iso_z, utcnow
 from app.core.schemas import IdentifyRequest, PatientRead, PatientRegister, PhoneStartRequest, PhoneVerifyRequest
-from app.core.security import require_admin, require_kiosk
+from app.core.security import (
+    create_phone_verification_token,
+    require_admin,
+    require_kiosk,
+    verified_phone_from_token,
+)
 from app.services.face_service import (
     MATCH_THRESHOLD,
     MAX_GALLERY_SIZE,
@@ -53,9 +60,8 @@ from app.services.sms import mask_phone, normalize_phone_in, send_otp_sms
 logger = logging.getLogger("kiosk.face")
 router = APIRouter(tags=["Face Recognition"])
 
-# Version of the consent text shown on the kiosk consent screen.
-# TODO: move to settings when the consent text becomes configurable.
-CONSENT_VERSION = "v1-2026-11"
+# Version of the consent text shown on the kiosk consent screen (CONSENT_VERSION setting).
+CONSENT_VERSION = settings.CONSENT_VERSION
 
 
 # ── Gallery helpers ────────────────────────────────────────────────────────────
@@ -186,6 +192,23 @@ def register(patient: PatientRegister, session: Session = Depends(get_session)):
     if patient.embedding and not face_consent:
         logger.info("[Face] Embedding supplied without face consent — discarded")
 
+    phone = normalize_phone_in(patient.phone) or patient.phone
+    if not (face_consent and patient.embedding):
+        # No face template → the visitor must have verified this phone by OTP.
+        verified = verified_phone_from_token(patient.phone_verification_token)
+        if verified is None:
+            raise KioskError(
+                "Please verify your mobile number before registering.",
+                "பதிவு செய்வதற்கு முன் உங்கள் மொபைல் எண்ணைச் சரிபார்க்கவும்.",
+                status_code=403,
+            )
+        if normalize_phone_in(patient.phone) != verified:
+            raise KioskError(
+                "The mobile number does not match the verified number.",
+                "மொபைல் எண் சரிபார்க்கப்பட்ட எண்ணுடன் பொருந்தவில்லை.",
+                status_code=403,
+            )
+
     embedding_arr = None
     emb_bytes = None
     if patient.embedding and face_consent:
@@ -201,7 +224,7 @@ def register(patient: PatientRegister, session: Session = Depends(get_session)):
         name=patient.name,
         gender=patient.gender,
         age=patient.age,
-        phone=normalize_phone_in(patient.phone) or patient.phone,
+        phone=phone,
         blood_group=patient.blood_group,
         city=patient.city,
         embedding=emb_bytes,
@@ -280,7 +303,8 @@ def identify_phone_verify(req: PhoneVerifyRequest, session: Session = Depends(ge
     patients = _patients_by_phone(session, phone)
     if not patients:
         logger.info("[Phone] Verified %s — no patient, continue to registration", mask_phone(phone))
-        return {"status": "new", "phone": phone}
+        return {"status": "new", "phone": phone,
+                "phone_verification_token": create_phone_verification_token(phone)}
 
     match = patients[0]
     match.visit_count = (match.visit_count or 0) + 1
@@ -288,6 +312,8 @@ def identify_phone_verify(req: PhoneVerifyRequest, session: Session = Depends(ge
     logger.info("[Phone] Verified %s — patient id=%s (others=%d)", mask_phone(phone), match.id, len(patients) - 1)
     out = _found_payload(match)
     out["other_patients"] = [_found_payload(p) for p in patients[1:]]
+    # Lets the kiosk register another person sharing this number (e.g. a child).
+    out["phone_verification_token"] = create_phone_verification_token(phone)
     return out
 
 

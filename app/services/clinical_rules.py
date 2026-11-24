@@ -26,10 +26,12 @@ import re
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
+from app.core.config import settings
+
 URGENCY_ORDER = {"normal": 0, "urgent": 1, "emergency": 2}
 
-# Age (years) below which a patient is treated as a child.
-CHILD_AGE_YEARS = 14  # TODO: move to settings if hospitals need a different cut-off
+# Age (years) below which a patient is treated as a child (CHILD_AGE_YEARS setting).
+CHILD_AGE_YEARS = settings.CHILD_AGE_YEARS
 
 
 def max_urgency(*levels: Optional[str]) -> str:

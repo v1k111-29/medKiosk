@@ -78,6 +78,21 @@ class Settings(BaseSettings):
     TWILIO_FROM_NUMBER: str = ""
     HOSPITAL_NAME: str = "City Hospital"
 
+    # Phone OTP identification (face opt-out)
+    OTP_TTL_MINUTES: int = 5
+    OTP_MAX_ATTEMPTS: int = 5
+    OTP_RATE_LIMIT: int = 3              # codes per phone per OTP_RATE_WINDOW_MINUTES
+    OTP_RATE_WINDOW_MINUTES: int = 10
+    # Lifetime of the signed proof returned by /identify/phone/verify and required by
+    # /register when no face template is enrolled.
+    PHONE_VERIFICATION_TOKEN_MINUTES: int = 15
+
+    # Version label stored with each face consent (bump when the consent text changes).
+    CONSENT_VERSION: str = "v1-2026-11"
+
+    # Clinical rules: age (years) below which a patient is treated as a child.
+    CHILD_AGE_YEARS: int = 14
+
     SEED_DEMO_USERS: bool = True
 
     @property

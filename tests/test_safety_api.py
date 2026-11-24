@@ -2,7 +2,11 @@
 
 
 def _patient(client, age=40, name="Safety Test"):
-    r = client.post("/register", json={"name": name, "age": age, "face_consent": False})
+    from app.core.security import create_phone_verification_token
+
+    token = create_phone_verification_token("+919876511111")
+    r = client.post("/register", json={"name": name, "age": age, "face_consent": False,
+                                       "phone": "9876511111", "phone_verification_token": token})
     assert r.status_code == 200, r.text
     return r.json()["id"]
 
