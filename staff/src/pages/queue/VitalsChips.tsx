@@ -23,6 +23,7 @@ export default function VitalsChips({ vitals }: { vitals: QueueVitals | null }) 
   if (vitals.spo2 != null) chips.push({ label: 'SpO2', value: `${vitals.spo2}%` })
   if (vitals.pulse != null) chips.push({ label: 'HR', value: String(vitals.pulse) })
   if (vitals.temperature != null) chips.push({ label: 'Temp', value: `${vitals.temperature}°C` })
+  if (vitals.resp_rate != null) chips.push({ label: 'RR', value: String(vitals.resp_rate) })
   if (vitals.glucose != null) chips.push({ label: 'Glu', value: String(vitals.glucose) })
 
   return (

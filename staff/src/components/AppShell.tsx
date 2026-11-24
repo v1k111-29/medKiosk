@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { LogOut, Monitor, Stethoscope, Users } from 'lucide-react'
+import { LogOut, Monitor, ScanFace, Stethoscope, Users } from 'lucide-react'
 import clsx from 'clsx'
 import { useAuth } from '../store/auth'
 
@@ -32,6 +32,11 @@ export default function AppShell() {
             {user?.role === 'admin' && (
               <NavLink to="/admin/users" className={linkClass}>
                 <Users className="h-4 w-4" /> Users
+              </NavLink>
+            )}
+            {user?.role === 'admin' && (
+              <NavLink to="/admin/patients" className={linkClass}>
+                <ScanFace className="h-4 w-4" /> Patients
               </NavLink>
             )}
             <a

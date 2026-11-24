@@ -37,14 +37,46 @@ export interface QueuePatient {
   phone_masked: string | null
 }
 
+export type News2Band = 'low' | 'low-medium' | 'medium' | 'high'
+
+export interface News2 {
+  score: number
+  points: Record<string, number>
+  band: News2Band
+  any_single_3: boolean
+  partial: boolean
+  missing: string[]
+}
+
+export interface Patient {
+  id: number
+  name: string
+  gender: string | null
+  age: number | null
+  phone: string | null
+  blood_group: string | null
+  visit_count: number
+  created_at: string
+  face_consent: boolean
+}
+
+export interface FaceDeleteResponse {
+  status: 'face_deleted'
+  id: number
+  templates_deleted: number
+  face_consent: boolean
+}
+
 export interface QueueVitals {
   bp_sys: number | null
   bp_dia: number | null
   spo2: number | null
   pulse: number | null
   temperature: number | null
+  resp_rate: number | null
   glucose: number | null
   flags: string[]
+  news2: News2 | null
 }
 
 export interface QueueItem {
@@ -55,6 +87,7 @@ export interface QueueItem {
   room: string
   status: QueueStatus
   urgency: Urgency
+  escalation_reasons: string[]
   symptoms: string | null
   created_at: string
   called_at: string | null
