@@ -7,6 +7,7 @@ import {
   AlertTriangle, Info, TrendingUp, History,
 } from 'lucide-react';
 import { faceApi } from '../services/api';
+import i18n from '../i18n';
 
 const PROMPTS = {
   height: { en: 'Please say your height in centimetres.', ta: 'உயரம் சென்டிமீட்டரில் சொல்லுங்கள்.' },
@@ -14,12 +15,24 @@ const PROMPTS = {
   bp_sys: { en: 'Systolic blood pressure — the top number.', ta: 'மேல் இரத்த அழுத்தம்.' },
   bp_dia: { en: 'Diastolic blood pressure — the bottom number.', ta: 'கீழ் இரத்த அழுத்தம்.' },
   spo2:   { en: 'Oxygen saturation percentage.', ta: 'ஆக்சிஜன் அளவு சதவிகிதம்.' },
+  pulse:  { en: 'Pulse rate in beats per minute.', ta: 'நாடித்துடிப்பு நிமிடத்திற்கு எத்தனை.' },
+  temperature: { en: 'Body temperature in degrees Celsius.', ta: 'உடல் வெப்பநிலை செல்சியஸில்.' },
+  resp_rate: { en: 'Breaths per minute.', ta: 'நிமிடத்திற்கு மூச்சு எண்ணிக்கை.' },
+  glucose: { en: 'Blood sugar in milligrams per decilitre.', ta: 'இரத்த சர்க்கரை mg/dL அளவில்.' },
+};
+
+/** Plausible ranges for kiosk entry (typo guard, not clinical thresholds). All fields optional. */
+const RANGES: Record<string, [number, number]> = {
+  height: [40, 250], weight: [2, 300],
+  bp_sys: [60, 260], bp_dia: [30, 160], spo2: [50, 100],
+  pulse: [30, 220], temperature: [34, 43], resp_rate: [6, 60], glucose: [20, 600],
 };
 
 const L = {
   en: {
     title: 'Medical Vitals', sub: 'Enter or speak your measurements — all optional.',
     height: 'Height', weight: 'Weight', bpSys: 'BP Systolic', bpDia: 'BP Diastolic', spo2: 'SpO₂',
+    pulse: 'Pulse', temperature: 'Temperature', respRate: 'Breathing rate', glucose: 'Blood sugar',
     history: 'Previous History', diabetes: 'Diabetes', hypertension: 'Hypertension',
     skip: 'Skip', next: 'Save & Continue', saving: 'Saving…',
     bmiLabel: 'BMI', flagsLabel: 'Clinical Flags',
@@ -29,6 +42,7 @@ const L = {
   ta: {
     title: 'உடல் அளவீடுகள்', sub: 'அளவீடுகளை உள்ளிடவும் — அனைத்தும் விருப்பத்தேர்வு.',
     height: 'உயரம்', weight: 'எடை', bpSys: 'BP மேல்', bpDia: 'BP கீழ்', spo2: 'ஆக்சிஜன்',
+    pulse: 'நாடித்துடிப்பு', temperature: 'வெப்பநிலை', respRate: 'மூச்சு வீதம்', glucose: 'இரத்த சர்க்கரை',
     history: 'முந்தைய வரலாறு', diabetes: 'நீரிழிவு', hypertension: 'உயர் இரத்த அழுத்தம்',
     skip: 'தவிர்', next: 'சேமித்து தொடரவும்', saving: 'சேமிக்கிறது…',
     bmiLabel: 'BMI', flagsLabel: 'மருத்துவ குறிப்புகள்',
@@ -105,9 +119,25 @@ const Vitals: React.FC = () => {
   const bpCat      = bpCategory(vitals.bp_sys, vitals.bp_dia);
   const spo2Cat    = spo2Category(vitals.spo2);
 
+  // ── Range validation (all optional; empty is fine) ─────────────────────────
+  const fieldLabel: Record<string, string> = {
+    height: t.height, weight: t.weight, bp_sys: t.bpSys, bp_dia: t.bpDia, spo2: t.spo2,
+    pulse: t.pulse, temperature: t.temperature, resp_rate: t.respRate, glucose: t.glucose,
+  };
+  const tr = i18n.getFixedT(language);
+  const rangeErrors = Object.entries(RANGES).flatMap(([k, [min, max]]) => {
+    const raw = vitals[k as keyof typeof vitals];
+    if (typeof raw !== 'string' || raw.trim() === '') return [];
+    const n = Number(raw);
+    return Number.isFinite(n) && n >= min && n <= max ? [] : [{ k, msg: tr('vitals_range', { field: fieldLabel[k], min, max }) }];
+  });
+  const invalid = new Set(rangeErrors.map(e => e.k));
+  const num = (s: string, int = false) => (s ? (int ? parseInt(s) : parseFloat(s)) : null);
+
   // ── Save ────────────────────────────────────────────────────────────────────
   const handleSave = async () => {
     if (!patient?.id) { setStep('CONFIRM'); return; }
+    if (rangeErrors.length) return;
 
     setLoading(true);
     try {
@@ -118,6 +148,10 @@ const Vitals: React.FC = () => {
         bp_sys:      vitals.bp_sys      ? parseInt(vitals.bp_sys)    : null,
         bp_dia:      vitals.bp_dia      ? parseInt(vitals.bp_dia)    : null,
         spo2:        vitals.spo2        ? parseFloat(vitals.spo2)    : null,
+        pulse:       num(vitals.pulse, true),
+        temperature: num(vitals.temperature),
+        resp_rate:   num(vitals.resp_rate, true),
+        glucose:     num(vitals.glucose),
         diabetes:    vitals.diabetes,
         hypertension: vitals.hypertension,
       });
@@ -140,7 +174,9 @@ const Vitals: React.FC = () => {
       <label className={labelCls}>{label} <span className="normal-case font-normal">({unit})</span></label>
       <div className="flex items-center gap-1">
         <input
-          className={inputCls} type="number"
+          className={`${inputCls} ${invalid.has(fkey) ? '!border-red-400 bg-red-50' : ''}`} type="number"
+          inputMode="decimal"
+          aria-invalid={invalid.has(fkey)}
           value={vitals[fkey] as string}
           onChange={e => setV(fkey as any, e.target.value)}
           placeholder={placeholder}
@@ -225,6 +261,22 @@ const Vitals: React.FC = () => {
           <VField fkey="spo2"   label={t.spo2}  unit="%"    placeholder="98"  />
         </div>
 
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <VField fkey="pulse"       label={t.pulse}       unit="bpm"   placeholder="72" />
+          <VField fkey="temperature" label={t.temperature} unit="°C"    placeholder="37.0" />
+          <VField fkey="resp_rate"   label={t.respRate}    unit="/min"  placeholder="16" />
+          <VField fkey="glucose"     label={t.glucose}     unit="mg/dL" placeholder="110" />
+        </div>
+
+        {rangeErrors.length > 0 && (
+          <ul role="alert" className="bg-red-50 border-2 border-red-200 rounded-2xl px-4 py-3 space-y-1">
+            {rangeErrors.map(e => (
+              <li key={e.k} className="text-sm font-semibold text-red-700"
+                style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>{e.msg}</li>
+            ))}
+          </ul>
+        )}
+
         {/* Live BP + SpO2 flags */}
         {(bpCat || spo2Cat) && (
           <div className="flex flex-wrap gap-2">
@@ -288,7 +340,7 @@ const Vitals: React.FC = () => {
             px-6 py-4 rounded-2xl font-semibold hover:border-[#2E7D96] transition-all">
           <ChevronLeft size={20} /> {t.skip}
         </button>
-        <button onClick={handleSave} disabled={loading}
+        <button onClick={handleSave} disabled={loading || rangeErrors.length > 0}
           className="flex-1 bg-[#2E7D96] hover:bg-[#236d84] disabled:opacity-50 text-white
             py-4 rounded-2xl text-lg font-bold flex items-center justify-center gap-3
             shadow-lg active:scale-95 transition-all">

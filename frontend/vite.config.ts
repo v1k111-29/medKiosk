@@ -28,6 +28,7 @@ export default defineConfig({
       '/departments':   { target: 'http://localhost:8000', changeOrigin: true },
       '/doctors':       { target: 'http://localhost:8000', changeOrigin: true },
       '/appointment':   { target: 'http://localhost:8000', changeOrigin: true },
+      '/tts':           { target: 'http://localhost:8000', changeOrigin: true },
     },
   },
 })

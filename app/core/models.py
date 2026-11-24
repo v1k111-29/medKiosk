@@ -232,5 +232,27 @@ class Appointment(Base):
     sms_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default="not_requested", server_default=text("'not_requested'")
     )
+    # JSON-encoded list[str] of why the server raised urgency (red flags, NEWS2, LLM).
+    escalation_reasons: Mapped[Optional[str]] = mapped_column(Text)
 
     patient: Mapped[Patient] = relationship(lazy="joined")
+
+
+class PhoneOtp(Base):
+    """One-time codes for phone identification (patients who decline face recognition).
+
+    Only a keyed hash of the code is stored. Rows are short-lived; old rows can be purged.
+    """
+
+    __tablename__ = "phone_otps"
+    __table_args__ = (Index("ix_phone_otps_phone_created", "phone", "created_at"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    phone: Mapped[str] = mapped_column(String(16), nullable=False)  # E.164
+    otp_hash: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utcnow, server_default=text("CURRENT_TIMESTAMP")
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
+    consumed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)

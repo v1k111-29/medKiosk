@@ -5,6 +5,7 @@ import { useTTS } from '../hooks/useVoice';
 import { faceApi, bookAppointment, errorDetail, BookingResult } from '../services/api';
 import { maskPhone } from '../utils';
 import DepartmentsStatus from '../components/DepartmentsStatus';
+import { Bilingual, Disclaimer } from '../components/Bilingual';
 import { Printer, CheckCircle, RotateCcw, Activity, Loader2, MessageSquare } from 'lucide-react';
 
 interface VitalsSummary {
@@ -45,7 +46,7 @@ const L = {
 const Confirmation: React.FC = () => {
   const {
     language, patient, triage, booking, setBooking, smsOptIn, setSmsOptIn,
-    departments, departmentsStatus, reset,
+    departments, departmentsStatus, reset, setStep,
   } = useKioskStore();
   const { speak } = useTTS();
   const t = L[language];
@@ -78,6 +79,8 @@ const Confirmation: React.FC = () => {
   const announcedRef = useRef(false);
   useEffect(() => {
     if (!booking || announcedRef.current) return;
+    // Server-side safety rules may have escalated this booking to Emergency.
+    if (booking.urgency === 'emergency') { setStep('EMERGENCY'); return; }
     announcedRef.current = true;
     const d = findDepartment(departments, booking.dept_id);
     speak(t.tts(booking.token, d ? deptLabel(d, language) : booking.dept_name, booking.room, waitText(booking)));
@@ -156,6 +159,8 @@ const Confirmation: React.FC = () => {
           </button>
         )}
 
+        <Disclaimer lang={language} className="w-full max-w-md mb-5" />
+
         {bookError && (
           <p className="mb-4 bg-red-50 border-2 border-red-200 text-red-700 rounded-2xl px-5 py-3 font-medium" style={font}>
             {bookError}
@@ -208,9 +213,16 @@ const Confirmation: React.FC = () => {
         {t.checkedIn}
       </h1>
 
-      <p className="text-base mb-6 h-6 text-[#1F7A5C]" style={font}>
+      <p className="text-base mb-3 h-6 text-[#1F7A5C]" style={font}>
         {smsSent ? `📱 ${tr('sms_sent_ok')}` : ''}
       </p>
+
+      {booking.urgency === 'urgent' && (
+        <div className="mb-3 bg-amber-100 border-2 border-amber-300 rounded-2xl px-5 py-2">
+          <Bilingual k="urgent_notice" lang={language} primaryClass="text-lg font-bold text-amber-900" secondaryClass="text-sm text-amber-800" />
+        </div>
+      )}
+      <Disclaimer lang={language} className="w-full max-w-sm mb-4" />
 
       {/* Ticket card */}
       <div id="ticket-print"

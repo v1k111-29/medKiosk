@@ -41,6 +41,7 @@ from app.routers import (
     face,
     medical,
     queue,
+    tts,
     voice,
     ws,
 )
@@ -146,7 +147,7 @@ app.add_middleware(
 )
 
 for r in (face, voice, medical, conversation, appointment, doctors, departments,
-          auth, admin, queue, display, ws):
+          auth, admin, queue, display, ws, tts):
     app.include_router(r.router)
 
 

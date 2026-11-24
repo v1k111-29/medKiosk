@@ -15,9 +15,11 @@ from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from app.core.database import session_scope
+from app.core.models import Patient
 from app.core.security import require_kiosk
+from app.services.clinical_rules import escalate, keyword_department
 from app.services.llm_service import call_llm_general, call_llm_registration, call_llm_triage
-from app.services.queue_service import departments_map, waiting_counts
+from app.services.queue_service import departments_map, latest_vitals_today, waiting_counts
 
 logger = logging.getLogger("kiosk.conversation")
 
@@ -39,9 +41,77 @@ def _load_departments() -> dict[str, dict]:
         return out
 
 
-async def _triage(text: str) -> dict:
+def _patient_context(patient_id: Optional[int]) -> tuple[Optional[int], Optional[dict]]:
+    """(age, today's latest vitals) for a patient, or (None, None)."""
+    if patient_id is None:
+        return None, None
+    with session_scope() as session:
+        p = session.get(Patient, patient_id)
+        if p is None:
+            return None, None
+        return p.age, latest_vitals_today(session, patient_id)
+
+
+def _dept_fields(departments: dict[str, dict], dept_id: str) -> dict:
+    d = departments.get(dept_id, {})
+    return {
+        "dept_id": dept_id,
+        "dept_name": d.get("name_en"),
+        "dept_name_ta": d.get("name_ta"),
+        "room": d.get("room"),
+        "wait_mins": int(d.get("wait_mins", 0)),
+        "department": dept_id,  # legacy field
+    }
+
+
+async def _triage(text: str, patient_id: Optional[int] = None, age: Optional[int] = None) -> dict:
+    """LLM triage (advisory) + deterministic safety layer.
+
+    Final urgency = max(LLM, red flags, NEWS2 of today's vitals). Emergency always routes to
+    the emergency department. If the LLM fails, keyword routing + rules are used instead.
+    """
     departments = await run_in_threadpool(_load_departments)
-    return await call_llm_triage(text, departments)
+    p_age, vitals = await run_in_threadpool(_patient_context, patient_id)
+    age = age if age is not None else p_age
+
+    result = await call_llm_triage(text, departments)
+    reasons_prefix: list[str] = []
+    if result.pop("llm_failed", False):
+        dept_id = keyword_department(text, age=age)
+        if dept_id not in departments:
+            dept_id = "general" if "general" in departments else next(iter(departments), "general")
+        reasons_prefix.append("AI triage unavailable: rule-based routing used")
+        result = {
+            "intent": "symptoms",
+            "service": "symptoms",
+            "symptoms": text.strip(),
+            "urgency": "normal",
+            "confidence": 0.3,
+            "reply": "",
+            **_dept_fields(departments, dept_id),
+        }
+
+    esc = escalate(result.get("urgency"), text, vitals=vitals, age=age)
+    result["urgency"] = esc["urgency"]
+    result["escalation_reasons"] = reasons_prefix + esc["escalation_reasons"]
+    result["red_flags"] = esc["red_flags"]
+    result["news2"] = esc["news2"]
+
+    if esc["urgency"] == "emergency" and "emergency" in departments:
+        result.update(_dept_fields(departments, "emergency"))
+        result["intent"] = "emergency"
+        result["service"] = "emergency"
+        room = departments["emergency"].get("room") or "ER"
+        result["reply"] = (
+            f"This may be an emergency. Please go to Emergency ({room}) now. Staff are being alerted."
+        )
+    elif esc["red_flags"] and result.get("intent") not in ("symptoms", "appointment", "followup", "emergency"):
+        result["intent"] = "symptoms"
+
+    if not result.get("reply"):
+        name = result.get("dept_name") or "the right department"
+        result["reply"] = f"I'll direct you to {name}."
+    return result
 
 
 # ── Request/Response Schemas ──────────────────────────────────────────────────
@@ -82,6 +152,8 @@ class RegisterConversationResponse(BaseModel):
 class TriageRequest(BaseModel):
     text: str = Field(..., description="Patient's symptom description")
     language: str = Field("en", description="Language code: en, ta, auto")
+    patient_id: Optional[int] = Field(None, description="If given, today's vitals and age feed escalation")
+    age: Optional[int] = Field(None, ge=0, le=130)
 
 
 class TriageResponse(BaseModel):
@@ -98,6 +170,12 @@ class TriageResponse(BaseModel):
     urgency:    str = "normal"
     confidence: float = 0.0
     reply:      str = ""
+    escalation_reasons: List[str] = Field(default_factory=list)
+    red_flags:  List[str] = Field(default_factory=list)
+    news2:      Optional[Dict[str, Any]] = None
+    disclaimer: Dict[str, str] = Field(
+        default_factory=lambda: {"en": "This is not a diagnosis.", "ta": "இது மருத்துவ நோயறிதல் அல்ல."}
+    )
     status:     str = "success"
 
 
@@ -169,11 +247,11 @@ async def conversation_triage(req: TriageRequest):
 
     logger.info("[Conversation/Triage] input chars=%d", len(req.text))
 
-    result = await _triage(req.text)
+    result = await _triage(req.text, patient_id=req.patient_id, age=req.age)
 
     logger.info(
-        "[Conversation/Triage] -> dept_id=%s urgency=%s conf=%s",
-        result.get("dept_id"), result.get("urgency"), result.get("confidence"),
+        "[Conversation/Triage] -> dept_id=%s urgency=%s conf=%s flags=%s",
+        result.get("dept_id"), result.get("urgency"), result.get("confidence"), result.get("red_flags"),
     )
 
     return TriageResponse(**{k: v for k, v in result.items() if k in TriageResponse.model_fields})

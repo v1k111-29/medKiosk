@@ -15,17 +15,92 @@ import os
 import httpx
 
 from app.core.config import settings
+from app.core.errors import KioskError
 from app.services import groq_client
+
+# Sarvam speech-to-text REST API (auth header `api-subscription-key`, multipart
+# fields file/model/mode/language_code; response {"transcript","language_code"}):
+# https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe
+SARVAM_STT_URL = "https://api.sarvam.ai/speech-to-text"
+_SARVAM_LANG = {"ta": "ta-IN", "en": "en-IN"}  # anything else -> "unknown" (auto-detect)
 
 logger = logging.getLogger("kiosk.voice")
 
 
 def is_whisper_available() -> bool:
-    """Whisper is available whenever GROQ_API_KEY is configured."""
+    """STT is available if the selected provider (or its Groq fallback) has a key."""
+    if settings.STT_PROVIDER == "sarvam" and settings.sarvam_configured:
+        return True
     return groq_client.is_configured()
 
 
-async def transcribe_async(
+def active_provider() -> str:
+    if settings.STT_PROVIDER == "sarvam" and settings.sarvam_configured:
+        return "sarvam"
+    return "groq"
+
+
+async def transcribe_async(audio_path: str, language: str = "auto") -> dict:
+    """
+    Transcribe audio with the configured provider (STT_PROVIDER).
+    Sarvam failures (or clips over SARVAM_STT_MAX_BYTES) fall back to Groq when
+    GROQ_API_KEY is set. Result dict: {"text", "language", "provider"}.
+    """
+    if active_provider() == "sarvam":
+        try:
+            return await _transcribe_sarvam(audio_path, language)
+        except Exception as e:
+            if not groq_client.is_configured():
+                if isinstance(e, KioskError):
+                    raise
+                raise RuntimeError(f"Sarvam transcription failed: {e}")
+            logger.warning("[Voice] Sarvam STT failed (%s) - falling back to Groq", e)
+    result = await _transcribe_groq(audio_path, language)
+    result["provider"] = "groq"
+    return result
+
+
+async def _transcribe_sarvam(audio_path: str, language: str) -> dict:
+    try:
+        with open(audio_path, "rb") as f:
+            audio_bytes = f.read()
+    except OSError as e:
+        raise RuntimeError(f"Could not read audio file: {e}")
+
+    if len(audio_bytes) > settings.SARVAM_STT_MAX_BYTES:
+        if groq_client.is_configured():
+            raise RuntimeError(f"clip {len(audio_bytes)} B exceeds Sarvam limit")
+        raise KioskError(
+            "Recording is too long for speech recognition. Please speak a shorter sentence.",
+            "பதிவு மிகவும் நீளமாக உள்ளது. சுருக்கமாகப் பேசவும்.",
+            status_code=413,
+        )
+
+    ext = os.path.splitext(audio_path)[1].lower().lstrip(".") or "webm"
+    mime = {"webm": "audio/webm", "ogg": "audio/ogg", "mp4": "audio/mp4", "m4a": "audio/mp4",
+            "mp3": "audio/mpeg", "wav": "audio/wav", "aac": "audio/aac", "flac": "audio/flac"}.get(ext, "audio/webm")
+    form = {
+        "model": (None, settings.SARVAM_STT_MODEL),
+        "mode": (None, "transcribe"),
+        "language_code": (None, _SARVAM_LANG.get(language or "", "unknown")),
+        "file": (f"recording.{ext}", audio_bytes, mime),
+    }
+    client = await groq_client.get_client()
+    resp = await client.post(
+        SARVAM_STT_URL,
+        headers={"api-subscription-key": settings.SARVAM_API_KEY},
+        files=form,
+        timeout=settings.SARVAM_TIMEOUT,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    text = (data.get("transcript") or "").strip()
+    detected = (data.get("language_code") or "").split("-")[0] or language or "unknown"
+    logger.info("[Voice] Sarvam transcribed lang=%s chars=%d", detected, len(text))
+    return {"text": text or ".", "language": detected, "provider": "sarvam"}
+
+
+async def _transcribe_groq(
     audio_path: str,
     language: str = "auto",
 ) -> dict:

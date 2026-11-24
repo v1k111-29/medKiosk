@@ -14,7 +14,7 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from app.core.config import settings
 from app.core.errors import KioskError
 from app.core.security import require_kiosk
-from app.services.voice_service import is_whisper_available, transcribe_async
+from app.services.voice_service import active_provider, is_whisper_available, transcribe_async
 
 logger = logging.getLogger("kiosk.voice")
 
@@ -45,10 +45,11 @@ async def transcribe_health():
     """
     api_key_set = bool(settings.GROQ_API_KEY)
     groq_ok = is_whisper_available()
+    provider = active_provider()
 
     return {
-        "provider":            "Groq Whisper API",
-        "model":               settings.GROQ_WHISPER_MODEL,
+        "provider":            "Sarvam" if provider == "sarvam" else "Groq Whisper API",
+        "model":               settings.SARVAM_STT_MODEL if provider == "sarvam" else settings.GROQ_WHISPER_MODEL,
         "api_key_configured":  api_key_set,
         "ready":               groq_ok,
         "ffmpeg_required":     False,
@@ -82,7 +83,7 @@ async def transcribe(
     # ── Pre-checks ──────────────────────────────────────────────────────────
     if not is_whisper_available():
         raise KioskError(
-            "Voice transcription is unavailable: GROQ_API_KEY is not set. "
+            "Voice transcription is unavailable: no STT API key is set (GROQ_API_KEY or SARVAM_API_KEY). "
             "Get a free key at https://console.groq.com",
             "குரல் சேவை கிடைக்கவில்லை. GROQ_API_KEY அமைக்கப்படவில்லை.",
             status_code=503,
@@ -137,7 +138,7 @@ async def transcribe(
             "transcription": text,
             "status": "success",
             "language": result.get("language", "unknown"),
-            "provider": "groq",
+            "provider": result.get("provider", "groq"),
         }
 
     except KioskError:

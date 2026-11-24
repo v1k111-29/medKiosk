@@ -114,3 +114,28 @@ def send_token_sms(phone: Optional[str], token: str, room: str, dept_name: str, 
     except Exception as e:  # never break booking
         logger.error("[SMS] Send failed for token %s: %s", token, e)
         return "failed"
+
+
+def otp_sms_text(otp: str) -> str:
+    return f"{settings.HOSPITAL_NAME}: Your kiosk verification code is {otp}. It expires in 5 minutes. Do not share it."
+
+
+def send_otp_sms(to_e164: str, otp: str) -> str:
+    """Send a verification code. Returns sms_status; never raises.
+
+    With the mock provider the code is written to the server log (dev only) so
+    staff/testers can complete the flow without a real SMS gateway.
+    """
+    try:
+        provider = get_provider()
+        status = provider.send(to_e164, otp_sms_text(otp))
+        if provider.name == "mock":
+            if settings.is_prod:
+                logger.warning("[SMS:mock] OTP generated for %s but SMS_PROVIDER=mock in prod — not delivered",
+                               mask_phone(to_e164))
+            else:
+                logger.info("[SMS:mock] OTP for %s is %s (dev only)", mask_phone(to_e164), otp)
+        return status
+    except Exception as e:
+        logger.error("[SMS] OTP send failed to %s: %s", mask_phone(to_e164), e)
+        return "failed"

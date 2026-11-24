@@ -16,6 +16,7 @@ export default defineConfig(({ mode }) => {
         '/display': http,
         '/admin': http,
         '/departments': http,
+        '/tts': http,
         '/ws': { target, changeOrigin: true, ws: true },
       },
     },

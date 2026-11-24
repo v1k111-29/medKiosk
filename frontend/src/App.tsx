@@ -10,6 +10,9 @@ import Triage from './views/Triage';
 import Department from './views/Department';
 import Vitals from './views/Vitals';
 import Confirmation from './views/Confirmation';
+import Consent from './views/Consent';
+import PhoneVerify from './views/PhoneVerify';
+import EmergencyAlert from './views/EmergencyAlert';
 import IdleOverlay from './components/IdleOverlay';
 
 const App: React.FC = () => {
@@ -21,10 +24,13 @@ const App: React.FC = () => {
 
   const renderStep = () => {
     switch (step) {
-      // SPLASH is now the always-on camera welcome screen.
-      // SCAN step still exists as fallback (e.g. if manually triggered).
+      // SPLASH: always-on camera, match-only (returning consented patients; nothing
+      // returned or stored for a non-match). New/unknown visitors -> CONSENT first.
+      // CONSENT -> SCAN (agreed, template may be stored) or PHONE (declined, OTP).
       case 'SPLASH':       return <Splash />;
       case 'LANGUAGE':     return <LanguageSelect />;
+      case 'CONSENT':      return <Consent />;
+      case 'PHONE':        return <PhoneVerify />;
       case 'SCAN':         return <FaceScan />;
       case 'REGISTER':     return <Registration />;
       case 'MENU':         return <MainMenu />;
@@ -33,6 +39,7 @@ const App: React.FC = () => {
       case 'DEPARTMENT':   return <Department />;
       case 'VITALS':       return <Vitals />;
       case 'CONFIRM':      return <Confirmation />;
+      case 'EMERGENCY':    return <EmergencyAlert />;
       default:             return <Splash />;
     }
   };

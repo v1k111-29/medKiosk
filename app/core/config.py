@@ -38,11 +38,28 @@ class Settings(BaseSettings):
 
     # Groq (cloud STT + LLM)
     GROQ_API_KEY: str = ""
-    GROQ_MODEL: str = "llama-3.1-8b-instant"
-    GROQ_TRIAGE_MODEL: str = "llama-3.3-70b-versatile"
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
+    GROQ_TRIAGE_MODEL: str = "openai/gpt-oss-120b"
     GROQ_WHISPER_MODEL: str = "whisper-large-v3-turbo"
     GROQ_TIMEOUT: float = 30.0
     GROQ_WHISPER_TIMEOUT: float = 30.0
+
+    # Speech providers (see docs/CONTRACT.md "Speech providers")
+    # Sarvam docs: https://docs.sarvam.ai/api-reference-docs/speech-to-text/transcribe
+    #              https://docs.sarvam.ai/api-reference-docs/text-to-speech/convert
+    STT_PROVIDER: Literal["groq", "sarvam"] = "groq"
+    TTS_PROVIDER: Literal["browser", "sarvam"] = "browser"
+    SARVAM_API_KEY: str = ""
+    SARVAM_STT_MODEL: str = "saaras:v4"
+    SARVAM_TTS_MODEL: str = "bulbul:v3"
+    SARVAM_TTS_SPEAKER_TA: str = "kavitha"
+    SARVAM_TTS_SPEAKER_EN: str = "priya"
+    SARVAM_TIMEOUT: float = 30.0
+    # The REST STT endpoint is meant for short clips (docs give no hard cap);
+    # larger uploads go to Groq or are rejected.
+    SARVAM_STT_MAX_BYTES: int = 2_000_000
+    TTS_RATE_LIMIT_PER_MIN: int = 60
+    TTS_CACHE_SIZE: int = 256
 
     # Auth
     JWT_SECRET: str = DEFAULT_JWT_SECRET
@@ -62,6 +79,11 @@ class Settings(BaseSettings):
     HOSPITAL_NAME: str = "City Hospital"
 
     SEED_DEMO_USERS: bool = True
+
+    @property
+    def sarvam_configured(self) -> bool:
+        k = self.SARVAM_API_KEY.strip()
+        return bool(k) and not k.startswith("REPLACE_ME")
 
     # ── Derived helpers ───────────────────────────────────────────────────────
     @property

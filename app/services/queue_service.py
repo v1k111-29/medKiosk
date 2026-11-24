@@ -4,6 +4,7 @@ Queue domain logic shared by booking, the staff queue, the display board and web
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timezone
 from typing import Iterable, Optional
 
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.models import Appointment, Department, Patient, TokenCounter, Vital, iso_z, today_local
 from app.services.realtime import DISPLAY, STAFF, hub
 from app.services.sms import mask_phone
+from app.services.clinical_rules import news2
 from app.services.vitals import compute_flags
 
 URGENCY_RANK = case(
@@ -143,9 +145,28 @@ def _vitals_dict(v: Optional[Vital]) -> Optional[dict]:
         "resp_rate", "glucose", "diabetes", "hypertension")}
     return {
         "bp_sys": v.bp_sys, "bp_dia": v.bp_dia, "spo2": v.spo2, "pulse": v.pulse,
-        "temperature": v.temperature, "glucose": v.glucose,
+        "temperature": v.temperature, "resp_rate": v.resp_rate, "glucose": v.glucose,
         "flags": compute_flags(raw)["flags"],
+        "news2": news2(raw),
     }
+
+
+def latest_vitals_today(session: Session, patient_id: int, queue_date: Optional[date] = None) -> Optional[dict]:
+    """Raw latest vitals recorded today for one patient (for server-side escalation), or None."""
+    v = _latest_vitals_today(session, [patient_id], queue_date or today_local()).get(patient_id)
+    if v is None:
+        return None
+    return {c: getattr(v, c) for c in ("bp_sys", "bp_dia", "spo2", "pulse", "temperature", "resp_rate", "glucose")}
+
+
+def decode_reasons(raw: Optional[str]) -> list[str]:
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+    except (TypeError, ValueError):
+        return [str(raw)]
+    return [str(x) for x in val] if isinstance(val, list) else [str(val)]
 
 
 def _patient_dict(p: Optional[Patient]) -> Optional[dict]:
@@ -174,6 +195,7 @@ def serialize_items(session: Session, appts: list[Appointment]) -> list[dict]:
             "room": d.room if d else a.room,
             "status": a.status,
             "urgency": a.urgency,
+            "escalation_reasons": decode_reasons(a.escalation_reasons),
             "symptoms": a.symptoms,
             "created_at": iso_z(a.created_at),
             "called_at": iso_z(a.called_at),

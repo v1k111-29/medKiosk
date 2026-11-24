@@ -3,6 +3,7 @@ import Webcam from 'react-webcam';
 import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
 import { faceApi } from '../services/api';
+import { Bilingual } from '../components/Bilingual';
 import { ScanFace, UserCheck, UserX, Loader2, AlertCircle } from 'lucide-react';
 
 type ScanState =
@@ -30,13 +31,13 @@ const STATUS_LABEL: Record<ScanState, string> = {
   idle:     'Step in front of the camera',
   scanning: 'Scanning your face…',
   found:    'Recognised! Welcome back 👋',
-  new:      'New visitor — opening registration…',
+  new:      'Welcome! Let us get you checked in…',
   no_face:  'No face detected — please look straight',
   error:    'Camera service offline',
 };
 
 const Splash: React.FC = () => {
-  const { setStep, setPatient, setTempEmbedding, setTempGender, language } = useKioskStore();
+  const { setStep, setPatient, setTempEmbedding, setTempGender, setFaceConsent, language } = useKioskStore();
   const { speak } = useTTS();
 
   const webcamRef  = useRef<Webcam>(null);
@@ -77,7 +78,9 @@ const Splash: React.FC = () => {
     setScanState('scanning');
 
     try {
-      const res  = await faceApi.post('/identify', { image: imageSrc });
+      // match_only: before consent the server only looks for a returning, face-consented
+      // patient; for anyone else it returns {"status":"new"} with no embedding or gender.
+      const res  = await faceApi.post('/identify', { image: imageSrc, match_only: true });
       const data = res.data;
 
       if (data.status === 'found') {
@@ -98,15 +101,12 @@ const Splash: React.FC = () => {
         return; // stop the loop
 
       } else if (data.status === 'new') {
+        // Not recognised: keep nothing, ask for consent before any capture that could be stored.
         setScanState('new');
-        setTempEmbedding(data.embedding);
-        setTempGender(data.gender);
-        speak(
-          language === 'ta'
-            ? 'புதிய நோயாளி. பதிவு செய்யவும்.'
-            : 'New visitor detected. Opening registration.'
-        );
-        setTimeout(() => setStep('REGISTER'), 2000);
+        setTempEmbedding(null);
+        setTempGender(null);
+        setFaceConsent(null);
+        setTimeout(() => setStep('CONSENT'), 1200);
         return; // stop the loop
 
       } else {
@@ -283,9 +283,11 @@ const Splash: React.FC = () => {
 
       {/* ── Bottom info strip ── */}
       <div className="w-full px-8 pb-8 flex items-end justify-between">
-        <div className="space-y-1">
+        <div className="space-y-1 max-w-md">
           <p className="text-white/40 text-xs uppercase tracking-widest font-semibold">AI Face Recognition</p>
-          <p className="text-white/25 text-xs">Look at the camera · No touch needed</p>
+          <p className="text-white/60 text-xs">
+            <Bilingual k="splash_privacy" lang={language} primaryClass="" secondaryClass="mt-0.5" />
+          </p>
         </div>
 
         {/* Manual fallback */}

@@ -20,6 +20,7 @@ import {
   MessageSquare, Send, ChevronRight, Bot
 } from 'lucide-react';
 import { faceApi } from '../services/api';
+import { Bilingual } from '../components/Bilingual';
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 
@@ -81,7 +82,9 @@ const L = {
 };
 
 const Registration: React.FC = () => {
-  const { language, tempGender, tempEmbedding, setStep, setPatient } = useKioskStore();
+  const { language, tempGender, tempEmbedding, faceConsent, verifiedPhone, setStep, setPatient } = useKioskStore();
+  // Face template is stored only if the visitor agreed on the CONSENT screen AND a face was captured.
+  const storeFace = faceConsent === true && !!tempEmbedding;
   const [selectedGender, setSelectedGender] = useState<string>(tempGender || '');
   const { speak, cancel: cancelTTS, isSpeaking } = useTTS();
   const t = L[language];
@@ -115,13 +118,17 @@ const Registration: React.FC = () => {
 
   // ── Manual form state (kept in sync with AI extractions) ────────────────
   const [manualForm, setManualForm] = useState({
-    name: '', age: '', phone: '', blood: '', city: '',
+    name: '', age: '', phone: verifiedPhone ?? '', blood: '', city: '',
   });
-  const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [formError, setFormError] = useState('');
   const [textInput, setTextInput] = useState('');
   const [showManual, setShowManual] = useState(false);
+
+  // Phone already verified by OTP (face opt-out path): don't ask for it again.
+  useEffect(() => {
+    if (verifiedPhone) setCollectedFields(c => ({ ...c, phone: verifiedPhone }));
+  }, [verifiedPhone]);
 
   // Refs for scroll
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -183,7 +190,6 @@ const Registration: React.FC = () => {
 
     const name = manualForm.name.trim();
     if (!name) { setFormError(t.errName); return; }
-    if (!consent) { setFormError(t.errConsent); return; }
 
     cancelTTS();
     setLoading(true);
@@ -196,7 +202,8 @@ const Registration: React.FC = () => {
         gender: selectedGender || 'Unknown',
         blood_group: manualForm.blood || null,
         city: manualForm.city || null,
-        embedding: tempEmbedding,
+        embedding: storeFace ? tempEmbedding : null,
+        face_consent: storeFace,
       });
 
       if (res.data?.status === 'registered') {
@@ -475,19 +482,11 @@ const Registration: React.FC = () => {
               )}
             </div>
 
-            {/* Consent */}
-            <label className="flex items-start gap-2 cursor-pointer bg-[#FEF3C7] border border-[#FDE68A] rounded-xl px-3 py-2">
-              <input
-                type="checkbox"
-                checked={consent}
-                onChange={e => setConsent(e.target.checked)}
-                className="mt-0.5 accent-[#2E7D96] w-4 h-4 flex-shrink-0"
-              />
-              <span className="text-xs text-[#92400E]"
-                style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>
-                {t.consentLabel}
-              </span>
-            </label>
+            {/* Face-data status (consent was asked on the CONSENT screen) */}
+            <div className="bg-[#FEF3C7] border border-[#FDE68A] rounded-xl px-3 py-2">
+              <Bilingual k={storeFace ? 'face_saved_note' : 'face_not_saved_note'} lang={language}
+                primaryClass="text-xs font-semibold text-[#92400E]" secondaryClass="text-[11px] text-[#92400E]/80" />
+            </div>
 
             {formError && (
               <p className="text-red-600 text-xs font-medium">{formError}</p>
@@ -495,7 +494,7 @@ const Registration: React.FC = () => {
 
             <button
               type="submit"
-              disabled={loading || !manualForm.name.trim() || !consent}
+              disabled={loading || !manualForm.name.trim()}
               className="w-full bg-[#2E7D96] hover:bg-[#236d84] disabled:opacity-40
                 text-white py-3 rounded-xl text-sm font-bold flex items-center
                 justify-center gap-2 transition-all active:scale-95"

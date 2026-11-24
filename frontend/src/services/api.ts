@@ -53,6 +53,7 @@ export interface BookingResult {
   service: string;
   symptoms: string | null;
   urgency: Urgency;
+  escalation_reasons?: string[];
   doctor_id: number | null;
   doctor_name: string | null;
   sms_status: SmsStatus;
@@ -82,10 +83,71 @@ export async function bookAppointment(req: BookingRequest): Promise<BookingResul
 }
 
 /** Extract a human-readable message from an axios/unknown error. */
-export function errorDetail(err: unknown, fallback: string): string {
+export function errorDetail(err: unknown, fallback: string, lang: 'en' | 'ta' = 'en'): string {
   if (axios.isAxiosError(err)) {
-    const d = err.response?.data as { detail?: unknown } | undefined;
+    const d = err.response?.data as { detail?: unknown; message?: { en?: string; ta?: string } } | undefined;
     if (typeof d?.detail === 'string') return d.detail;
+    const m = d?.message?.[lang] ?? d?.message?.en;
+    if (typeof m === 'string') return m;
   }
   return fallback;
+}
+
+// ── Triage (server applies the deterministic safety layer) ───────────────────
+
+export interface News2 {
+  score: number;
+  band: 'low' | 'low-medium' | 'medium' | 'high';
+  points: Record<string, number>;
+  any_single_3: boolean;
+  partial: boolean;
+  missing: string[];
+}
+
+export interface TriageResult {
+  intent: string;
+  service: string;
+  dept_id: string | null;
+  dept_name: string | null;
+  dept_name_ta: string | null;
+  room: string | null;
+  wait_mins: number;
+  symptoms: string | null;
+  urgency: Urgency;
+  confidence: number;
+  reply: string;
+  escalation_reasons: string[];
+  red_flags: string[];
+  news2: News2 | null;
+}
+
+export async function triageSymptoms(text: string, language: string, patientId?: number | null, age?: number | null): Promise<TriageResult> {
+  const res = await faceApi.post<TriageResult>('/conversation/triage', {
+    text, language, patient_id: patientId ?? null, age: age ?? null,
+  });
+  return res.data;
+}
+
+// ── Phone identification (face opt-out) ─────────────────────────────────────
+
+export interface IdentifiedPatient {
+  status: 'found';
+  id: number;
+  name: string;
+  gender: string;
+  age: number | null;
+  phone: string | null;
+  visits: number | null;
+  other_patients?: IdentifiedPatient[];
+}
+
+export type PhoneVerifyResult = IdentifiedPatient | { status: 'new'; phone: string };
+
+export async function phoneStart(phone: string): Promise<void> {
+  await faceApi.post('/identify/phone/start', { phone });
+}
+
+export async function phoneVerify(phone: string, otp: string): Promise<PhoneVerifyResult> {
+  const res = await faceApi.post<PhoneVerifyResult>('/identify/phone/verify', { phone, otp });
+  return res.data;
 }

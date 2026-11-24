@@ -17,6 +17,7 @@ from app.core.errors import KioskError
 from app.core.models import Patient, Vital, iso_z
 from app.core.schemas import VitalsCreate
 from app.core.security import require_kiosk
+from app.services.clinical_rules import news2
 from app.services.vitals import compute_flags
 
 logger = logging.getLogger("kiosk.medical")
@@ -34,6 +35,7 @@ def _vital_dict(v: Vital) -> dict:
     data["diabetes"] = bool(v.diabetes)
     data["hypertension"] = bool(v.hypertension)
     data.update(compute_flags(data))
+    data["news2"] = news2(data)
     return data
 
 
@@ -60,6 +62,7 @@ def store_vitals(vitals: VitalsCreate, session: Session = Depends(get_session)):
         "patient_id": vitals.patient_id,
         "bmi": flags_data["bmi"],
         "flags": flags_data["flags"],
+        "news2": news2(vitals.model_dump()),
         "message": "Vitals stored successfully",
     }
 

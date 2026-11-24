@@ -16,7 +16,7 @@ const L = {
     greet: (n: string) => `Welcome back, ${n}!`,
     newPatient: 'New patient detected. Please register.',
     tts_prompt: 'Please look straight at the camera and press Scan.',
-    skip: 'Skip & Register Manually',
+    skip: 'Use my phone number instead',
   },
   ta: {
     title: 'கேமராவைப் பாருங்கள்',
@@ -28,7 +28,7 @@ const L = {
     greet: (n: string) => `மீண்டும் வருக, ${n}!`,
     newPatient: 'புதிய நோயாளி கண்டறியப்பட்டது. பதிவு செய்யவும்.',
     tts_prompt: 'கேமராவை நேரடியாக பாருங்கள், ஸ்கேன் அழுத்தவும்.',
-    skip: 'தவிர் & நேரடியாக பதிவு செய்',
+    skip: 'பதிலாக மொபைல் எண்ணைப் பயன்படுத்து',
   },
 };
 
@@ -36,11 +36,13 @@ const FaceScan: React.FC = () => {
   const webcamRef = useRef<Webcam>(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState('');
-  const { language, setStep, setPatient, setTempEmbedding, setTempGender, reset } = useKioskStore();
+  const { language, faceConsent, setFaceConsent, setStep, setPatient, setTempEmbedding, setTempGender } = useKioskStore();
   const { speak } = useTTS();
   const t = L[language];
 
+  // A capture here may be stored as a face template, so consent must come first.
   useEffect(() => {
+    if (faceConsent !== true) { setStep('CONSENT'); return; }
     speak(t.tts_prompt);
   }, []);
 
@@ -76,10 +78,12 @@ const FaceScan: React.FC = () => {
     }
   };
 
+  // Without a face capture the visitor is identified (or registered) by phone + OTP.
   const handleSkip = () => {
     setTempEmbedding(null);
     setTempGender(null);
-    setStep('REGISTER');
+    setFaceConsent(false);
+    setStep('PHONE');
   };
 
   return (

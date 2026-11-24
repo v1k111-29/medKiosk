@@ -327,7 +327,9 @@ async def call_llm_triage(user_text: str, departments: dict[str, dict]) -> dict:
     )
 
     if result is None:
+        # Callers (conversation router) fall back to deterministic rules on llm_failed.
         return {
+            "llm_failed": True,
             "intent": "other",
             "department": None,
             "symptoms": None,

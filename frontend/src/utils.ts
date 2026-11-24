@@ -1,6 +1,7 @@
 /**
  * Privacy helpers shared by the idle reset and the error boundary.
  */
+import { stopSpeaking } from './services/tts';
 
 /** Stop every camera/mic track attached to a media element, and cancel speech. */
 export function stopAllMedia(): void {
@@ -13,7 +14,7 @@ export function stopAllMedia(): void {
       el.srcObject = null;
     });
   } catch { /* ignore */ }
-  try { window.speechSynthesis?.cancel(); } catch { /* ignore */ }
+  stopSpeaking(); // Sarvam audio + browser speech
 }
 
 /** "9876543210" -> "******3210" */

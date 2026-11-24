@@ -51,7 +51,45 @@ export function playChime(): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, 900))
 }
 
-function speak(text: string, lang: string): Promise<void> {
+const API_BASE: string = (import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '')
+
+let providerPromise: Promise<'browser' | 'sarvam'> | null = null
+
+/** Asks the backend once whether Sarvam TTS is active (public endpoint, no key). */
+function getProvider(): Promise<'browser' | 'sarvam'> {
+  if (!providerPromise) {
+    providerPromise = fetch(`${API_BASE}/tts/config`)
+      .then((r) => (r.ok ? r.json() : { provider: 'browser' }))
+      .then((j) => (j.provider === 'sarvam' ? 'sarvam' : 'browser') as 'browser' | 'sarvam')
+      .catch(() => {
+        providerPromise = null
+        return 'browser' as const
+      })
+  }
+  return providerPromise
+}
+
+async function speakSarvam(text: string, lang: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/tts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: text.slice(0, 500), language: lang.startsWith('ta') ? 'ta' : 'en' }),
+  })
+  if (!res.ok) throw new Error(`tts ${res.status}`)
+  const url = URL.createObjectURL(await res.blob())
+  try {
+    const audio = new Audio(url)
+    await new Promise<void>((resolve, reject) => {
+      audio.onended = () => resolve()
+      audio.onerror = () => reject(new Error('audio error'))
+      audio.play().catch(reject)
+    })
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+function speakBrowser(text: string, lang: string): Promise<void> {
   return new Promise((resolve) => {
     if (!('speechSynthesis' in window)) {
       resolve()
@@ -69,6 +107,19 @@ function speak(text: string, lang: string): Promise<void> {
     u.onerror = () => resolve()
     window.speechSynthesis.speak(u)
   })
+}
+
+/** Sarvam audio when the backend has it enabled; any failure falls back to speechSynthesis. */
+async function speak(text: string, lang: string): Promise<void> {
+  if ((await getProvider()) === 'sarvam') {
+    try {
+      await speakSarvam(text, lang)
+      return
+    } catch (e) {
+      console.warn('[announce] Sarvam TTS failed, using browser voice:', e)
+    }
+  }
+  await speakBrowser(text, lang)
 }
 
 /** "C-004" -> "C 0 0 4" so it is read character by character. */

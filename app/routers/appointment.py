@@ -8,9 +8,10 @@ GET  /appointment/patient/{patient_id} — list a patient's appointments
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import date, datetime
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -22,7 +23,15 @@ from app.core.database import get_session
 from app.core.errors import KioskError
 from app.core.models import Appointment, Department, Doctor, Patient, iso_z, today_local
 from app.core.security import require_kiosk
-from app.services.queue_service import broadcast_change, format_token, next_token_number, queue_position
+from app.services.clinical_rules import escalate
+from app.services.queue_service import (
+    broadcast_change,
+    decode_reasons,
+    format_token,
+    latest_vitals_today,
+    next_token_number,
+    queue_position,
+)
 from app.services.sms import send_token_sms
 
 logger = logging.getLogger("kiosk.appointment")
@@ -42,7 +51,9 @@ class BookAppointmentRequest(BaseModel):
     wait_mins: Optional[int] = Field(None, description="Ignored — computed by the server")
     doctor_id: Optional[int] = Field(None, description="Selected doctor ID")
     doctor_name: Optional[str] = Field(None, description="Ignored — taken from the doctors table")
-    urgency: Literal["normal", "urgent", "emergency"] = "normal"
+    urgency: Literal["normal", "urgent", "emergency"] = Field(
+        "normal", description="Client/AI suggestion. The server may raise it (red flags, NEWS2), never lower it."
+    )
     sms_opt_in: bool = False
 
 
@@ -58,6 +69,7 @@ class BookAppointmentResponse(BaseModel):
     service: str
     symptoms: Optional[str]
     urgency: str
+    escalation_reasons: List[str] = Field(default_factory=list)
     doctor_id: Optional[int] = None
     doctor_name: Optional[str] = None
     sms_status: str
@@ -73,6 +85,8 @@ def _appointment_dict(a: Appointment) -> dict:
             v = iso_z(v)
         elif isinstance(v, date):
             v = v.isoformat()
+        elif col.key == "escalation_reasons":
+            v = decode_reasons(v)
         out[col.key] = v
     return out
 
@@ -90,7 +104,18 @@ def book_appointment(req: BookAppointmentRequest, session: Session = Depends(get
     if dept is None or not dept.active:
         raise KioskError(f"Unknown department '{req.dept_id}'.", "துறை கண்டறியப்படவில்லை.", status_code=400)
 
-    urgency = "emergency" if dept.id == "emergency" else req.urgency
+    # Deterministic safety layer: client urgency can only be raised, never lowered.
+    esc = escalate(req.urgency, req.symptoms, vitals=latest_vitals_today(session, patient.id),
+                   age=patient.age, llm_label="Kiosk triage")
+    urgency = esc["urgency"]
+    reasons = list(esc["escalation_reasons"])
+    if urgency == "emergency" and dept.id != "emergency":
+        er = session.get(Department, "emergency")
+        if er is not None and er.active:
+            reasons.append(f"Routed to Emergency (requested {dept.id})")
+            dept = er
+    if dept.id == "emergency":
+        urgency = "emergency"
 
     doctor_id, doctor_name = None, None
     if req.doctor_id is not None:
@@ -121,6 +146,7 @@ def book_appointment(req: BookAppointmentRequest, session: Session = Depends(get
                 doctor_name=doctor_name,
                 sms_opt_in=req.sms_opt_in,
                 sms_status="not_requested",
+                escalation_reasons=json.dumps(reasons, ensure_ascii=False) if reasons else None,
             )
             session.add(appt)
             session.flush()
@@ -141,8 +167,8 @@ def book_appointment(req: BookAppointmentRequest, session: Session = Depends(get
         appt.sms_status = send_token_sms(patient.phone, appt.token, dept.room, dept.name_en, appt.wait_mins)
         session.commit()
 
-    logger.info("[Appointment] Booked id=%s token=%s dept=%s pos=%s patient_id=%s",
-                appt.id, appt.token, dept.id, position, patient.id)
+    logger.info("[Appointment] Booked id=%s token=%s dept=%s pos=%s patient_id=%s urgency=%s reasons=%d",
+                appt.id, appt.token, dept.id, position, patient.id, appt.urgency, len(reasons))
 
     try:
         broadcast_change(session, appt)
@@ -161,6 +187,7 @@ def book_appointment(req: BookAppointmentRequest, session: Session = Depends(get
         service=appt.service,
         symptoms=appt.symptoms,
         urgency=appt.urgency,
+        escalation_reasons=reasons,
         doctor_id=appt.doctor_id,
         doctor_name=appt.doctor_name,
         sms_status=appt.sms_status,

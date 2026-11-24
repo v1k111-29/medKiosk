@@ -28,6 +28,7 @@ interface PendingBooking {
   symptoms:  string | null;
   service:   NonNullable<TriageData['service']>;
   urgency:   Urgency;
+  escalation_reasons: string[];
   reply:     string;
   doctor_id:   number | null;
   doctor_name: string | null;
@@ -41,6 +42,7 @@ interface TriageResponse {
   service?: string;
   urgency?: string;
   reply?: string;
+  escalation_reasons?: string[];
 }
 
 const SERVICES: ReadonlyArray<NonNullable<TriageData['service']>> = ['symptoms', 'appointment', 'followup', 'emergency'];
@@ -168,7 +170,10 @@ const Conversation: React.FC = () => {
   // ── Triage: ask LLM for dept routing ──────────────────────────────────────
   const runTriage = async (text: string, intent: string) => {
     try {
-      const res = await faceApi.post<TriageResponse>('/conversation/triage', { text, language: 'en' });
+      // patient_id lets the server add today's vitals (NEWS2) and age to the safety rules.
+      const res = await faceApi.post<TriageResponse>('/conversation/triage', {
+        text, language: 'en', patient_id: patient?.id ?? null, age: patient?.age ?? null,
+      });
       const data = res.data;
 
       const deptId = data.dept_id || 'general';
@@ -188,6 +193,7 @@ const Conversation: React.FC = () => {
         symptoms:  data.symptoms  || text,
         service:   toService(data.service || intent),
         urgency:   toUrgency(data.urgency),
+        escalation_reasons: data.escalation_reasons ?? [],
         reply:     data.reply     || '',
         doctor_id:   null,
         doctor_name: null,
@@ -238,6 +244,7 @@ const Conversation: React.FC = () => {
       symptoms:   booking.symptoms || '',
       deptId:     booking.dept_id,
       urgency:    booking.urgency,
+      escalationReasons: booking.escalation_reasons,
       doctorId:   booking.doctor_id || null,
       doctorName: booking.doctor_name || '',
     };
@@ -276,11 +283,12 @@ const Conversation: React.FC = () => {
       addMessage('ai', doneMsg);
       speak(doneMsg, 'en');
 
-      // Navigate to vitals form after brief pause
-      setTimeout(() => setStep('VITALS'), 2500);
+      // Emergency: show the large "go to ER now" screen (staff are alerted via the queue).
+      setTimeout(() => setStep(appt.urgency === 'emergency' ? 'EMERGENCY' : 'VITALS'), 1500);
 
     } catch (err) {
       console.error('[Conversation] Booking failed:', err);
+      if (booking.urgency === 'emergency') { setStep('EMERGENCY'); return; }
       const msg = errorDetail(err, 'Booking failed. Please try again.');
       addMessage('ai', msg);
       speak(msg, 'en');
