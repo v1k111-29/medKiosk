@@ -3,7 +3,9 @@ import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
 import { useVoiceTriage } from '../hooks/useVoiceTriage';
 import { Mic, Send, Loader2, ChevronLeft, Square, AlertTriangle } from 'lucide-react';
-import { detectDept } from '../data/departments';
+import { detectDeptId } from '../data/departments';
+import { triageSymptoms, bookAppointment, Urgency } from '../services/api';
+import { Disclaimer } from '../components/Bilingual';
 
 const L = {
   en: {
@@ -33,7 +35,7 @@ const L = {
 };
 
 const Triage: React.FC = () => {
-  const { language, setStep, setTriage } = useKioskStore();
+  const { language, patient, setStep, setTriage, setBooking } = useKioskStore();
   const { speak } = useTTS();
   // Triage allows mixed Tamil/English speech, so let Whisper auto-detect
   // the language per recording rather than forcing one.
@@ -50,23 +52,48 @@ const Triage: React.FC = () => {
     initListening();
   }, [initListening, speak, t.tts]);
 
-  const handleAnalyze = () => {
-    if (!transcription.trim()) return;
+  // The server decides urgency (LLM advisory + red-flag rules + NEWS2 from today's vitals).
+  // The kiosk never hardcodes urgency; booking re-checks server-side and can only raise it.
+  const handleAnalyze = async () => {
+    const text = transcription.trim();
+    if (!text) return;
     setLoading(true);
     speak(language === 'ta' ? 'அறிகுறிகள் பகுப்பாய்வு செய்யப்படுகின்றன.' : 'Analysing your symptoms.');
-    setTimeout(() => {
-      const dept = detectDept(transcription);
-      setTriage({
-        symptoms: transcription,
-        deptId: dept.id,
-        deptName: dept.en,
-        deptNameTa: dept.ta,
-        room: dept.room,
-        waitMins: dept.waitMins,
-      });
+    let deptId = detectDeptId(text);
+    let urgency: Urgency = 'normal';
+    let reasons: string[] = [];
+    try {
+      const r = await triageSymptoms(text, 'auto', patient?.id, patient?.age);
+      if (r.dept_id) deptId = r.dept_id;
+      urgency = r.urgency;
+      reasons = r.escalation_reasons ?? [];
+    } catch (err) {
+      // Offline: keyword dept only. /appointment/book still applies the safety rules.
+      console.error('[Triage] server triage failed:', err);
+    }
+    // Keep the patient's own words for staff; the server re-checks them at booking.
+    setTriage({ symptoms: text, deptId, urgency, escalationReasons: reasons });
+
+    if (urgency === 'emergency') {
+      // Book straight into the emergency queue (alerts staff), then show the ER screen.
+      if (patient?.id) {
+        try {
+          const appt = await bookAppointment({
+            patient_id: patient.id, dept_id: 'emergency', symptoms: text,
+            service: 'emergency', urgency: 'emergency', sms_opt_in: false,
+            doctor_id: null, doctor_name: null,
+          });
+          setBooking(appt);
+        } catch (err) {
+          console.error('[Triage] emergency booking failed:', err);
+        }
+      }
       setLoading(false);
-      setStep('DEPARTMENT');
-    }, 1200);
+      setStep('EMERGENCY');
+      return;
+    }
+    setLoading(false);
+    setStep('DEPARTMENT');
   };
 
   const ta = language === 'ta';
@@ -118,6 +145,8 @@ const Triage: React.FC = () => {
         </div>
       )}
 
+      <Disclaimer lang={language} className="mb-3" />
+
       <textarea
         className="flex-1 w-full p-5 text-lg rounded-3xl border-2 border-white shadow-lg
           focus:border-[#2E7D96] outline-none resize-none bg-white transition-all"
@@ -137,6 +166,7 @@ const Triage: React.FC = () => {
 
         <button
           onClick={handleMicToggle}
+          aria-label={isRecording ? "Stop recording" : "Tap to speak"}
           disabled={isProcessing}
           className={`flex-1 flex items-center justify-center gap-3 py-4 rounded-2xl text-lg font-bold
             transition-all border-2 relative overflow-hidden ${isRecording

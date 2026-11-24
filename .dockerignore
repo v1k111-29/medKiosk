@@ -1,0 +1,36 @@
+# Secrets and local state
+.env
+.env.*
+!.env.example
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+.deepface/
+temp/
+
+# Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Frontends are built in their own images
+frontend/
+staff/
+static/
+node_modules/
+
+# Repo / tooling
+.git/
+.github/
+.claude/
+docs/
+tests/
+*.md
+*.webm
+*.wav
+*.mp3

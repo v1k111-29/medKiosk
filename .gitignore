@@ -32,3 +32,5 @@ temp/
 
 # Environment variables
 .env
+*.db-shm
+*.db-wal

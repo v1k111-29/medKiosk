@@ -1,0 +1,6 @@
+# Tests + lint. Needs only the base deps (tests never load DeepFace/TensorFlow).
+# Full dev setup: pip install -r requirements.txt -r requirements-dev.txt
+-r requirements-base.txt
+pytest>=8.0
+httpx>=0.27
+ruff>=0.15

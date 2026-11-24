@@ -1,51 +1,57 @@
-import sqlite3
-import pandas as pd
-from pathlib import Path
+"""
+Dump every table of the configured database (DATABASE_URL, default SQLite
+patients.db) to the console. Long values such as face embeddings are truncated.
 
-def retrieve_all_data(db_path):
-    print(f"\n{'='*60}")
-    print(f"DATABASE: {db_path.name}")
-    print(f"{'='*60}")
-    
-    if not db_path.exists():
-        print(f"Error: {db_path} does not exist.")
+    python retrieve_data.py            # all tables
+    python retrieve_data.py patients   # selected tables
+"""
+
+import sys
+
+from sqlalchemy import MetaData, select
+
+from app.core.config import settings
+from app.core.database import engine
+
+MAX_CELL = 30
+
+
+def _cell(value) -> str:
+    if value is None:
+        return "NULL"
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return f"<{len(value)} bytes>"
+    text = str(value)
+    return text[:MAX_CELL] + "..." if len(text) > MAX_CELL + 3 else text
+
+
+def _print_table(name: str, columns: list[str], rows: list[tuple]) -> None:
+    print(f"\n--- Table: {name} ({len(rows)} rows) ---")
+    if not rows:
+        print("Table is empty.")
         return
+    cells = [[_cell(v) for v in row] for row in rows]
+    widths = [max(len(c), *(len(r[i]) for r in cells)) for i, c in enumerate(columns)]
+    print("  ".join(c.ljust(w) for c, w in zip(columns, widths)))
+    for r in cells:
+        print("  ".join(v.ljust(w) for v, w in zip(r, widths)))
 
-    try:
-        conn = sqlite3.connect(db_path)
-        # Get all table names
-        cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = [row[0] for row in cursor.fetchall() if row[0] != 'sqlite_sequence']
-        
-        if not tables:
-            print("No data tables found in this database.")
-        
+
+def main(selected: list[str]) -> None:
+    print("=" * 60)
+    print(f"DATABASE: {engine.url.render_as_string(hide_password=True)}  (ENV={settings.ENV})")
+    print("=" * 60)
+    meta = MetaData()
+    meta.reflect(bind=engine)
+    tables = [t for name, t in sorted(meta.tables.items()) if not selected or name in selected]
+    if not tables:
+        print("No matching tables found.")
+        return
+    with engine.connect() as conn:
         for table in tables:
-            print(f"\n--- Table: {table} ---")
-            # Using pandas for pretty printing
-            df = pd.read_sql_query(f"SELECT * FROM {table}", conn)
-            if df.empty:
-                print("Table is empty.")
-            else:
-                # Truncate long strings (like embeddings) for better display
-                for col in df.columns:
-                    if df[col].dtype == object:
-                        df[col] = df[col].apply(lambda x: str(x)[:30] + '...' if len(str(x)) > 33 else x)
-                print(df.to_string(index=False))
-        
-        conn.close()
-    except Exception as e:
-        print(f"Error accessing {db_path.name}: {e}")
+            rows = [tuple(r) for r in conn.execute(select(table))]
+            _print_table(table.name, [c.name for c in table.columns], rows)
+
 
 if __name__ == "__main__":
-    base_dir = Path(__file__).parent.resolve()
-    
-    # List of databases to retrieve data from
-    databases = [
-        base_dir / "patients.db",
-        base_dir / "medical.db"
-    ]
-    
-    for db in databases:
-        retrieve_all_data(db)
+    main(sys.argv[1:])

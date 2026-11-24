@@ -1,16 +1,11 @@
-fastapi>=0.110.0
-uvicorn[standard]>=0.27.0
+# Full backend install = base + face recognition (DeepFace/ArcFace + TensorFlow, heavy).
+# Model weights (~800 MB) download on first use, or ahead of time with:
+#   python -m app.services.face_service
+# Without the face block the app still boots; /identify returns an error.
+-r requirements-base.txt
+
+# ── Face recognition (heavy; imported lazily — app boots without it) ─────────
 deepface>=0.0.92
 tf-keras
-opencv-python>=4.8.0
-pillow>=10.0.0
-numpy>=1.24.0
-scipy>=1.11.0
-python-multipart
-httpx>=0.27.0
-groq>=0.9.0
-pydantic>=2.0.0
-
-# ── Optional: local Whisper (commented out — now using Groq cloud API) ──────
-# openai-whisper
-# torch
+# OpenCV comes with deepface as opencv-contrib-python-headless. Do NOT also install
+# opencv-python: two OpenCV packages share the cv2 folder and break each other.

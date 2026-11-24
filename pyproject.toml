@@ -1,0 +1,22 @@
+[project]
+name = "medkiosk"
+version = "3.0.0"
+requires-python = ">=3.11"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["static", "frontend", "staff"]
+
+[tool.ruff.lint]
+# Correctness-focused: pyflakes + pycodestyle errors/warnings (no formatting or import-order rules).
+select = ["E", "F", "W"]
+ignore = [
+    "E501",  # long lines (prompts / bilingual messages)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/versions/*.py" = ["E402"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

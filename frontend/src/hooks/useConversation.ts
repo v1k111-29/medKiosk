@@ -20,7 +20,7 @@ export const useConversation = () => {
   // value from the render that created the closure, not the latest one.
   const errorCountRef = useRef(0);
 
-  const { setStep, setTriage, language } = useKioskStore();
+  const { setStep, setTriage, language, patient } = useKioskStore();
 
   const addMessage = useCallback((role: 'ai' | 'user', text: string) => {
     setMessages(prev => [...prev, { role, text }]);
@@ -37,6 +37,7 @@ export const useConversation = () => {
       const res = await faceApi.post('/conversation/triage', {
         text: trimmed,
         language,
+        patient_id: patient?.id ?? null,
       });
 
       const data: LLMResponse = res.data;
@@ -68,7 +69,7 @@ export const useConversation = () => {
     } finally {
       setIsAI(false);
     }
-  }, [addMessage, language, setTriage, setStep]);
+  }, [addMessage, language, patient, setTriage, setStep]);
 
   return { messages, isAILoading, processText, addMessage, errorCount: errorCountRef.current };
 };

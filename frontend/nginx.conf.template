@@ -1,0 +1,61 @@
+# Patient kiosk: serves the built SPA and proxies the kiosk API to the backend.
+# Rendered by the nginx image's envsubst step (only ${KIOSK_PROXY_KEY} is substituted).
+#
+# KIOSK_PROXY_KEY: one of the backend's KIOSK_DEVICE_KEYS. nginx adds it as X-Kiosk-Key so the
+# key is not baked into the JS bundle. Anyone who can reach this port acts as a kiosk, so
+# firewall port 8080 to the kiosk machines (see docs/DEPLOY.md).
+
+# Strip JWTs / tokens from logged request lines.
+map $request $redacted_request {
+    "~^(?<pre>.*[?&](?:access_)?token=)[^&\s]*(?<post>.*)$" "${pre}[REDACTED]${post}";
+    default $request;
+}
+log_format redacted '$remote_addr - [$time_local] "$redacted_request" $status $body_bytes_sent '
+                    '"$http_referer" "$http_user_agent"';
+
+upstream medkiosk_backend {
+    server backend:8000;
+}
+
+server {
+    listen 80;
+    server_name _;
+    access_log /var/log/nginx/access.log redacted;
+
+    root /usr/share/nginx/html;
+    client_max_body_size 20m;          # base64 face images, audio clips
+
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy no-referrer always;
+    # Camera + microphone for this origin only.
+    add_header Permissions-Policy "camera=(self), microphone=(self)" always;
+
+    # Kiosk API (same paths as the Vite dev proxy).
+    location ~ ^/(identify|register|transcribe|vitals|conversation|patients|health|departments|doctors|appointment|tts)(/|$) {
+        proxy_pass http://medkiosk_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Kiosk-Key "${KIOSK_PROXY_KEY}";
+        proxy_read_timeout 120s;       # Groq / Sarvam calls
+        proxy_send_timeout 120s;
+    }
+
+    location /assets/ {
+        expires 1y;
+        add_header Cache-Control "public, immutable" always;
+        try_files $uri =404;
+    }
+
+    location = /index.html {
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options nosniff always;
+        add_header Permissions-Policy "camera=(self), microphone=(self)" always;
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+}

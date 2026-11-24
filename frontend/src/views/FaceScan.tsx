@@ -16,7 +16,8 @@ const L = {
     greet: (n: string) => `Welcome back, ${n}!`,
     newPatient: 'New patient detected. Please register.',
     tts_prompt: 'Please look straight at the camera and press Scan.',
-    skip: 'Skip & Register Manually',
+    skip: 'Use my phone number instead',
+    usePhone: 'We could not confirm your face. Please check in with your mobile number.',
   },
   ta: {
     title: 'கேமராவைப் பாருங்கள்',
@@ -28,7 +29,8 @@ const L = {
     greet: (n: string) => `மீண்டும் வருக, ${n}!`,
     newPatient: 'புதிய நோயாளி கண்டறியப்பட்டது. பதிவு செய்யவும்.',
     tts_prompt: 'கேமராவை நேரடியாக பாருங்கள், ஸ்கேன் அழுத்தவும்.',
-    skip: 'தவிர் & நேரடியாக பதிவு செய்',
+    skip: 'பதிலாக மொபைல் எண்ணைப் பயன்படுத்து',
+    usePhone: 'உங்கள் முகத்தை உறுதிப்படுத்த முடியவில்லை. மொபைல் எண் மூலம் பதிவு செய்யவும்.',
   },
 };
 
@@ -36,11 +38,13 @@ const FaceScan: React.FC = () => {
   const webcamRef = useRef<Webcam>(null);
   const [loading, setLoading] = useState(false);
   const [errMsg, setErrMsg] = useState('');
-  const { language, setStep, setPatient, setTempEmbedding, setTempGender, reset } = useKioskStore();
+  const { language, faceConsent, setFaceConsent, setStep, setPatient, setTempEmbedding, setTempGender } = useKioskStore();
   const { speak } = useTTS();
   const t = L[language];
 
+  // A capture here may be stored as a face template, so consent must come first.
   useEffect(() => {
+    if (faceConsent !== true) { setStep('CONSENT'); return; }
     speak(t.tts_prompt);
   }, []);
 
@@ -64,22 +68,35 @@ const FaceScan: React.FC = () => {
         setTempGender(data.gender);
         speak(t.newPatient);
         setStep('REGISTER');
+      } else if (data.status === 'spoof' || data.status === 'ambiguous') {
+        // Face ID cannot be trusted for this capture: nothing is stored, use phone + OTP.
+        speak(t.usePhone);
+        setErrMsg(t.usePhone);
+        setTempEmbedding(null);
+        setTempGender(null);
+        setFaceConsent(false);
+        setTimeout(() => setStep('PHONE'), 1500);
       } else {
         setErrMsg(t.noFace);
         speak(t.noFace);
       }
-    } catch {
-      setErrMsg(t.err);
-      speak(t.err);
+    } catch (err: any) {
+      // 503 = face models loading or unavailable: the server sends a bilingual message.
+      const m = err?.response?.data?.message;
+      const msg = (m && (language === 'ta' ? m.ta : m.en)) || t.err;
+      setErrMsg(msg);
+      speak(msg);
     } finally {
       setLoading(false);
     }
   };
 
+  // Without a face capture the visitor is identified (or registered) by phone + OTP.
   const handleSkip = () => {
     setTempEmbedding(null);
     setTempGender(null);
-    setStep('REGISTER');
+    setFaceConsent(false);
+    setStep('PHONE');
   };
 
   return (

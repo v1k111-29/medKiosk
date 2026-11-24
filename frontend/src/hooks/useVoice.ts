@@ -1,50 +1,39 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import { useKioskStore } from '../store/useKioskStore';
+import {
+  speak as ttsSpeak,
+  speakBoth as ttsSpeakBoth,
+  stopSpeaking,
+  isSarvamSpeaking,
+  onSpeakingChange,
+} from '../services/tts';
 
-// ── TTS ────────────────────────────────────────────────────────────────────
+// ── TTS (Sarvam via backend when configured, else browser speechSynthesis) ──
 export function useTTS() {
   const { language } = useKioskStore();
   const [isSpeaking, setIsSpeaking] = useState(false);
 
-  // Poll window.speechSynthesis.speaking every 200ms as a fallback —
-  // onend is unreliable on Chrome when the queue is cancelled mid-utterance.
+  // Sarvam playback state is pushed by the service; browser speech is polled every
+  // 200ms because onend is unreliable on Chrome when the queue is cancelled.
   useEffect(() => {
-    if (!('speechSynthesis' in window)) return;
+    const unsub = onSpeakingChange(setIsSpeaking);
     const id = setInterval(() => {
-      setIsSpeaking(window.speechSynthesis.speaking);
+      if (isSarvamSpeaking()) return;
+      if ('speechSynthesis' in window) setIsSpeaking(window.speechSynthesis.speaking);
     }, 200);
-    return () => clearInterval(id);
+    return () => { unsub(); clearInterval(id); };
   }, []);
 
   const speak = useCallback((text: string, lang?: 'en' | 'ta') => {
-    if (!('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = (lang ?? language) === 'ta' ? 'ta-IN' : 'en-IN';
-    utter.rate = 0.9;
-    utter.pitch = 1;
-    utter.onstart = () => setIsSpeaking(true);
-    utter.onend   = () => setIsSpeaking(false);
-    utter.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(utter);
+    void ttsSpeak(text, lang ?? language);
   }, [language]);
 
   const speakBoth = useCallback((en: string, ta: string) => {
-    if (!('speechSynthesis' in window)) return;
-    window.speechSynthesis.cancel();
-    const u1 = new SpeechSynthesisUtterance(ta);
-    u1.lang = 'ta-IN'; u1.rate = 0.88;
-    u1.onstart = () => setIsSpeaking(true);
-    const u2 = new SpeechSynthesisUtterance(en);
-    u2.lang = 'en-IN'; u2.rate = 0.9;
-    u2.onend   = () => setIsSpeaking(false);
-    u2.onerror = () => setIsSpeaking(false);
-    window.speechSynthesis.speak(u1);
-    window.speechSynthesis.speak(u2);
+    void ttsSpeakBoth(en, ta);
   }, []);
 
   const cancel = useCallback(() => {
-    window.speechSynthesis.cancel();
+    stopSpeaking();
     setIsSpeaking(false);
   }, []);
 

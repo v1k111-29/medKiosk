@@ -10,8 +10,10 @@ Key design decisions:
   Same person (frontal + angle/lighting): 0.10–0.42
   Different people:                       0.50–1.0
   Buffer zone at 0.45 gives safety without false positives.
-- Dual detector: opencv (fast) → retinaface fallback (low-light/off-angle).
+- Detectors: YuNet (fast, accurate) → OpenCV Haar fallback. The LARGEST face is used.
 - align=True: corrects roll/tilt before embedding — major accuracy boost.
+- Optional anti-spoofing (MiniFASNet): a face that looks like a photo/screen is
+  never matched; the kiosk sends that visitor to phone check-in instead.
 - Multi-shot gallery: up to 5 embeddings per patient, matched with min-dist.
 """
 
@@ -25,6 +27,8 @@ from PIL import Image
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
+from app.core.config import settings
+
 logger = logging.getLogger("kiosk.face")
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -35,17 +39,17 @@ ALLOWED_IMAGE_FORMATS = {"JPEG", "PNG", "BMP"}
 # Same person across angles/lighting: typically 0.10–0.42
 # Different people:                   0.50–1.0
 # 0.45 gives a comfortable same-person margin while rejecting impostors.
-MATCH_THRESHOLD       = float(os.getenv("FACE_MATCH_THRESHOLD", "0.45"))
+MATCH_THRESHOLD       = settings.FACE_MATCH_THRESHOLD
 
 # Maximum embeddings to store per patient (multi-shot gallery)
-MAX_GALLERY_SIZE      = int(os.getenv("FACE_GALLERY_SIZE", "5"))
+MAX_GALLERY_SIZE      = settings.FACE_GALLERY_SIZE
 
 _deepface = None
 executor  = ThreadPoolExecutor(max_workers=4)
 
 
 def get_df():
-    """Lazy-load DeepFace."""
+    """Lazy-load DeepFace (heavy: TensorFlow). Raises ImportError if not installed."""
     global _deepface
     if _deepface is None:
         os.environ["TF_CPP_MIN_LOG_LEVEL"]  = "3"
@@ -76,7 +80,8 @@ def decode_image(data_url: str) -> np.ndarray:
         _, encoded = data_url.split(",", 1)
         img_bytes  = base64.b64decode(encoded, validate=True)
     except Exception as e:
-        raise ValueError(f"Invalid base64: {e}")
+        logger.debug("[Face] base64 decode failed: %s", e)
+        raise ValueError("Invalid image data")
 
     if len(img_bytes) > MAX_IMAGE_SIZE:
         raise ValueError(f"Image too large (max {MAX_IMAGE_SIZE // 1024 // 1024} MB)")
@@ -89,7 +94,8 @@ def decode_image(data_url: str) -> np.ndarray:
     except ValueError:
         raise
     except Exception as e:
-        raise ValueError(f"Corrupt image: {e}")
+        logger.debug("[Face] image decode failed: %s", e)
+        raise ValueError("Corrupt or unreadable image")
 
 
 # ── Async helper ──────────────────────────────────────────────────────────────
@@ -99,63 +105,154 @@ async def run_ai_task(func, *args, **kwargs):
     return await loop.run_in_executor(executor, lambda: func(*args, **kwargs))
 
 
-# ── Embedding extraction — dual detector ─────────────────────────────────────
+# ── Errors ────────────────────────────────────────────────────────────────────
 
-async def get_embedding_async(img: np.ndarray) -> Optional[np.ndarray]:
-    """
-    Extract 512-dim ArcFace embedding.
+class FaceEngineError(RuntimeError):
+    """The face engine itself failed (not installed, model load, download, crash).
 
-    1. Try opencv (fast, good in normal lighting, ~0.1s)
-    2. Fall back to retinaface (robust in low light / angles, ~0.5s)
-    3. Return None only if both fail (genuine no-face frame)
+    Never reported to the patient as "no face": the kiosk must offer phone check-in.
     """
 
-    def _task():
-        df = get_df()
 
-        for backend in ("opencv", "retinaface"):
-            try:
-                result = df.represent(
-                    img_path=img,
-                    model_name="ArcFace",
-                    detector_backend=backend,
-                    enforce_detection=True,
-                    align=True,          # corrects face roll/tilt
-                )
-                emb = np.array(result[0]["embedding"], dtype=np.float32)
-                logger.debug(f"[Face] Embedding via {backend}, norm={float(np.linalg.norm(emb)):.3f}")
-                return emb
-            except Exception as e:
-                logger.debug(f"[Face] {backend} failed: {e}")
+class SpoofSuspected(Exception):
+    """The largest face looks like a photo or screen, not a live person."""
 
-        logger.warning("[Face] Both detectors failed — no face in frame")
+
+# ── Face detection + embedding ───────────────────────────────────────────────
+
+# Detector chain. YuNet (OpenCV DNN, ~0.1 s on CPU) is accurate and rarely
+# returns false faces; the Haar-cascade "opencv" detector is the fallback.
+# RetinaFace is NOT used: it takes 20-30 s per frame on a kiosk CPU.
+DETECTORS = ("yunet", "opencv")
+MIN_FACE_PX = 60   # ignore tiny detections (background people, posters, noise)
+
+
+def _largest_face(faces: list) -> Optional[dict]:
+    """Pick the biggest face: at a kiosk that is the person standing at the screen."""
+    faces = [f for f in faces
+             if min(f["facial_area"]["w"], f["facial_area"]["h"]) >= MIN_FACE_PX]
+    if not faces:
         return None
+    return max(faces, key=lambda f: f["facial_area"]["w"] * f["facial_area"]["h"])
 
-    return await run_ai_task(_task)
+
+def _to_bgr(img: np.ndarray) -> np.ndarray:
+    """DeepFace treats numpy input as BGR (OpenCV order); decode_image returns RGB."""
+    return np.ascontiguousarray(img[:, :, ::-1])
+
+
+def _detect_largest(df, bgr: np.ndarray, anti_spoofing: bool) -> Optional[dict]:
+    from deepface.modules.exceptions import FaceNotDetected
+
+    for backend in DETECTORS:
+        try:
+            faces = df.extract_faces(
+                img_path=bgr,
+                detector_backend=backend,
+                enforce_detection=True,
+                align=True,            # corrects face roll/tilt
+                anti_spoofing=anti_spoofing,
+            )
+        except FaceNotDetected:
+            logger.debug("[Face] %s: no face", backend)
+            continue
+        face = _largest_face(faces)
+        if face is not None:
+            face["detector"] = backend
+            return face
+    return None
+
+
+def embed_image(img: np.ndarray, anti_spoofing: Optional[bool] = None) -> Optional[np.ndarray]:
+    """512-dim ArcFace embedding of the LARGEST face in an RGB image (blocking).
+
+    Returns None when no face is found. Raises SpoofSuspected when anti-spoofing
+    is on and that face looks like a photo/screen, FaceEngineError when the
+    engine itself fails.
+    """
+    if anti_spoofing is None:
+        anti_spoofing = settings.FACE_ANTI_SPOOFING
+    try:
+        df = get_df()
+        face = _detect_largest(df, _to_bgr(img), anti_spoofing)
+        if face is None:
+            return None
+        if anti_spoofing and face.get("is_real") is False:
+            logger.warning("[Face] Spoof suspected (score=%.2f, detector=%s)",
+                           float(face.get("antispoof_score", 0)), face["detector"])
+            raise SpoofSuspected()
+        # extract_faces returns the aligned crop as RGB float [0,1]; embed it directly.
+        crop = _to_bgr((face["face"] * 255).astype(np.uint8))
+        result = df.represent(img_path=crop, model_name="ArcFace", detector_backend="skip")
+        emb = np.array(result[0]["embedding"], dtype=np.float32)
+        logger.debug("[Face] Embedding via %s, face=%sx%s", face["detector"],
+                     face["facial_area"]["w"], face["facial_area"]["h"])
+        return emb
+    except SpoofSuspected:
+        raise
+    except Exception as e:
+        logger.error("[Face] Face engine error: %s: %s", type(e).__name__, e)
+        raise FaceEngineError(str(e)) from e
+
+
+async def get_embedding_async(img: np.ndarray, anti_spoofing: Optional[bool] = None) -> Optional[np.ndarray]:
+    return await run_ai_task(embed_image, img, anti_spoofing)
 
 
 # ── Gender detection ──────────────────────────────────────────────────────────
 
 async def detect_gender_async(img: np.ndarray) -> str:
+    """Best effort; "Unknown" on any failure (gender is only a form pre-fill)."""
 
     def _task():
-        df = get_df()
-        for backend in ("opencv", "retinaface"):
-            try:
-                result = df.analyze(
-                    img_path=img,
-                    actions=["gender"],
-                    detector_backend=backend,
-                    enforce_detection=True,
-                    silent=True,
-                )
-                scores = result[0]["gender"]
+        try:
+            df = get_df()
+            bgr = _to_bgr(img)
+            for backend in DETECTORS:
+                try:
+                    result = df.analyze(img_path=bgr, actions=["gender"], detector_backend=backend,
+                                        enforce_detection=True, silent=True)
+                except ValueError:
+                    continue
+                biggest = max(result, key=lambda r: r["region"]["w"] * r["region"]["h"])
+                scores = biggest["gender"]
                 return "Man" if scores["Man"] >= scores["Woman"] else "Woman"
-            except Exception:
-                continue
+        except Exception as e:
+            logger.warning("[Face] Gender detection failed: %s", e)
         return "Unknown"
 
     return await run_ai_task(_task)
+
+
+# ── Model warm-up / prefetch ─────────────────────────────────────────────────
+
+_warm_state = {"state": "not_started", "error": None}
+
+
+def warm_state() -> dict:
+    return dict(_warm_state)
+
+
+def warm_up() -> None:
+    """Load (and on first run download, ~800 MB) every model the kiosk uses.
+
+    Blocking. Run at server start in the background, or ahead of time with
+    `python -m app.services.face_service` (start.bat does this after install).
+    """
+    _warm_state.update(state="warming", error=None)
+    try:
+        df = get_df()
+        dummy = np.zeros((224, 224, 3), dtype=np.uint8)
+        df.build_model(model_name="ArcFace")
+        df.build_model(model_name="Gender", task="facial_attribute")
+        for backend in DETECTORS:
+            df.extract_faces(img_path=dummy, detector_backend=backend, enforce_detection=False,
+                             anti_spoofing=settings.FACE_ANTI_SPOOFING)
+        df.represent(img_path=dummy, model_name="ArcFace", detector_backend="skip")
+        _warm_state.update(state="ready")
+    except Exception as e:
+        _warm_state.update(state="failed", error=f"{type(e).__name__}: {e}")
+        raise
 
 
 # ── Distance helpers ──────────────────────────────────────────────────────────
@@ -197,3 +294,20 @@ def deserialize_embedding(data) -> Optional[np.ndarray]:
     except Exception as e:
         logger.error(f"[Face] Deserialize error: {e}")
         return None
+
+
+if __name__ == "__main__":
+    # Prefetch all face models (used by start.bat after the first install).
+    import sys
+
+    from app.core.utf8_console import force_utf8_console
+
+    force_utf8_console()
+    logging.basicConfig(level=logging.INFO)
+    print("Downloading/loading face models (first time ~800 MB)...", flush=True)
+    try:
+        warm_up()
+    except Exception as e:
+        print(f"Face model prefetch failed: {e}", flush=True)
+        sys.exit(1)
+    print("Face models ready.", flush=True)

@@ -20,6 +20,7 @@ import {
   MessageSquare, Send, ChevronRight, Bot
 } from 'lucide-react';
 import { faceApi } from '../services/api';
+import { Bilingual } from '../components/Bilingual';
 
 const BLOOD_GROUPS = ['A+', 'A-', 'B+', 'B-', 'O+', 'O-', 'AB+', 'AB-'];
 
@@ -81,7 +82,9 @@ const L = {
 };
 
 const Registration: React.FC = () => {
-  const { language, tempGender, tempEmbedding, setStep, setPatient } = useKioskStore();
+  const { language, tempGender, tempEmbedding, faceConsent, verifiedPhone, phoneVerificationToken, setStep, setPatient } = useKioskStore();
+  // Face template is stored only if the visitor agreed on the CONSENT screen AND a face was captured.
+  const storeFace = faceConsent === true && !!tempEmbedding;
   const [selectedGender, setSelectedGender] = useState<string>(tempGender || '');
   const { speak, cancel: cancelTTS, isSpeaking } = useTTS();
   const t = L[language];
@@ -94,7 +97,7 @@ const Registration: React.FC = () => {
     allCollected, lastReply, error: voiceError,
     initListening, isListeningMode, volume, sendText,
   } = useConversationalRegistration({
-    language: 'en', // Whisper + Ollama work best in English for field extraction
+    language, // speech-to-text and spoken replies follow the kiosk language
     onFieldsExtracted: (extracted) => {
       // Auto-sync extracted fields into manual form
       setManualForm(prev => ({
@@ -108,20 +111,26 @@ const Registration: React.FC = () => {
     onAllCollected: () => {
       // Brief pause then suggest submitting
       setTimeout(() => {
-        speak("I've got all your details. Please check them below and tap 'Complete Registration'.", 'en');
+        speak(ta
+          ? `உங்கள் விவரங்கள் கிடைத்துவிட்டன. கீழே சரிபார்த்து '${t.submitBtn}' அழுத்தவும்.`
+          : `I've got all your details. Please check them below and tap '${t.submitBtn}'.`, language);
       }, 500);
     },
   });
 
   // ── Manual form state (kept in sync with AI extractions) ────────────────
   const [manualForm, setManualForm] = useState({
-    name: '', age: '', phone: '', blood: '', city: '',
+    name: '', age: '', phone: verifiedPhone ?? '', blood: '', city: '',
   });
-  const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [formError, setFormError] = useState('');
   const [textInput, setTextInput] = useState('');
   const [showManual, setShowManual] = useState(false);
+
+  // Phone already verified by OTP (face opt-out path): don't ask for it again.
+  useEffect(() => {
+    if (verifiedPhone) setCollectedFields(c => ({ ...c, phone: verifiedPhone }));
+  }, [verifiedPhone]);
 
   // Refs for scroll
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -136,7 +145,7 @@ const Registration: React.FC = () => {
     const greeting = t.aiGreeting;
     // Send initial greeting as an assistant message
     setTimeout(() => {
-      speak(greeting, 'en');
+      speak(greeting, language);
       // Auto-start listening after greeting begins
       initListening();
     }, 600);
@@ -183,20 +192,23 @@ const Registration: React.FC = () => {
 
     const name = manualForm.name.trim();
     if (!name) { setFormError(t.errName); return; }
-    if (!consent) { setFormError(t.errConsent); return; }
 
     cancelTTS();
     setLoading(true);
 
     try {
+      // Without a stored face, the server requires the OTP-verified number + its token.
+      const phone = storeFace ? (manualForm.phone || null) : verifiedPhone;
       const res = await faceApi.post('/register', {
         name,
         age: manualForm.age ? parseInt(manualForm.age) : null,
-        phone: manualForm.phone || null,
+        phone,
+        phone_verification_token: storeFace ? null : phoneVerificationToken,
         gender: selectedGender || 'Unknown',
         blood_group: manualForm.blood || null,
         city: manualForm.city || null,
-        embedding: tempEmbedding,
+        embedding: storeFace ? tempEmbedding : null,
+        face_consent: storeFace,
       });
 
       if (res.data?.status === 'registered') {
@@ -205,11 +217,13 @@ const Registration: React.FC = () => {
           name,
           age: manualForm.age ? parseInt(manualForm.age) : undefined,
           gender: selectedGender || undefined,
-          phone: manualForm.phone || undefined,
+          phone: phone || undefined,
           blood_group: manualForm.blood || undefined,
           city: manualForm.city || undefined,
         });
-        speak(`Registration successful. Welcome, ${name.split(' ')[0]}!`, 'en');
+        speak(ta
+          ? `பதிவு முடிந்தது. வரவேற்கிறோம், ${name.split(' ')[0]}!`
+          : `Registration successful. Welcome, ${name.split(' ')[0]}!`, language);
         setStep('CONVERSATION');
       }
     } catch (err: any) {
@@ -406,7 +420,8 @@ const Registration: React.FC = () => {
                 <input
                   className={inputCls}
                   type="tel"
-                  value={manualForm.phone}
+                  value={storeFace ? manualForm.phone : (verifiedPhone ?? '')}
+                  readOnly={!storeFace}
                   onChange={e => updateManual('phone', e.target.value.replace(/\D/g, ''))}
                   placeholder="9876543210"
                 />
@@ -475,19 +490,11 @@ const Registration: React.FC = () => {
               )}
             </div>
 
-            {/* Consent */}
-            <label className="flex items-start gap-2 cursor-pointer bg-[#FEF3C7] border border-[#FDE68A] rounded-xl px-3 py-2">
-              <input
-                type="checkbox"
-                checked={consent}
-                onChange={e => setConsent(e.target.checked)}
-                className="mt-0.5 accent-[#2E7D96] w-4 h-4 flex-shrink-0"
-              />
-              <span className="text-xs text-[#92400E]"
-                style={{ fontFamily: ta ? "'Noto Sans Tamil',sans-serif" : undefined }}>
-                {t.consentLabel}
-              </span>
-            </label>
+            {/* Face-data status (consent was asked on the CONSENT screen) */}
+            <div className="bg-[#FEF3C7] border border-[#FDE68A] rounded-xl px-3 py-2">
+              <Bilingual k={storeFace ? 'face_saved_note' : 'face_not_saved_note'} lang={language}
+                primaryClass="text-xs font-semibold text-[#92400E]" secondaryClass="text-[11px] text-[#92400E]/80" />
+            </div>
 
             {formError && (
               <p className="text-red-600 text-xs font-medium">{formError}</p>
@@ -495,7 +502,7 @@ const Registration: React.FC = () => {
 
             <button
               type="submit"
-              disabled={loading || !manualForm.name.trim() || !consent}
+              disabled={loading || !manualForm.name.trim()}
               className="w-full bg-[#2E7D96] hover:bg-[#236d84] disabled:opacity-40
                 text-white py-3 rounded-xl text-sm font-bold flex items-center
                 justify-center gap-2 transition-all active:scale-95"

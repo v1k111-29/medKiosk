@@ -11,11 +11,12 @@ const LanguageSelect: React.FC = () => {
     setLanguage(lang);
     speak(
       lang === 'ta'
-        ? 'தமிழ் தேர்ந்தெடுக்கப்பட்டது. கேமராவை நோக்கி பாருங்கள்.'
-        : 'English selected. Please look at the camera.',
+        ? 'தமிழ் தேர்ந்தெடுக்கப்பட்டது.'
+        : 'English selected.',
       lang
     );
-    setTimeout(() => setStep('SCAN'), 800);
+    // Ask for face-data consent before any capture that could be stored.
+    setTimeout(() => setStep('CONSENT'), 800);
   };
 
   return (

@@ -2,7 +2,7 @@ import React from 'react';
 import { useKioskStore, KioskStep } from '../store/useKioskStore';
 
 const STEPS: { key: KioskStep[]; label: string; labelTa: string }[] = [
-  { key: ['SCAN'],                       label: 'Identify',   labelTa: 'அடையாளம்' },
+  { key: ['CONSENT', 'PHONE', 'SCAN'],   label: 'Identify',   labelTa: 'அடையாளம்' },
   { key: ['REGISTER'],                   label: 'Register',   labelTa: 'பதிவு' },
   { key: ['MENU'],                       label: 'Service',    labelTa: 'சேவை' },
   { key: ['TRIAGE', 'DEPARTMENT'],       label: 'Dept',       labelTa: 'துறை' },

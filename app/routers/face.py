@@ -2,163 +2,194 @@
 Face Recognition Router — patient identification and registration.
 
 Multi-shot gallery matching:
-- Each patient stores up to MAX_GALLERY_SIZE embeddings in face_embeddings.
-- On identify: loads full gallery, uses minimum cosine distance across all.
-- On re-identify: adds new embedding to gallery (online learning).
-- Legacy fallback: if gallery empty, uses patients.embedding column.
+- Each patient stores up to FACE_GALLERY_SIZE embeddings in face_embeddings.
+- On identify: loads all galleries, uses minimum cosine distance per patient.
+- On re-identify: adds the new embedding to the gallery (online learning).
+- Legacy fallback: if a gallery is empty, patients.embedding is migrated into it.
+- Only patients with face_consent=true are matched.
 
-Threshold: 0.45 (ArcFace cosine distance — same person <0.42, diff >0.50)
+Threshold: FACE_MATCH_THRESHOLD (ArcFace cosine distance; same person <0.42, different >0.50).
+
+Consent:
+- `/identify` with `match_only=true` (kiosk, before consent) never returns or stores
+  anything for a non-match.
+- `/register` requires an explicit `face_consent`; the embedding is stored only when true.
+  Identity must be proven either by a face template (face_consent=true + embedding) or by a
+  `phone_verification_token` from `/identify/phone/verify` bound to the registered phone.
+- Visitors who decline identify by phone: `/identify/phone/start` + `/identify/phone/verify`.
+- Admins can withdraw face data with `DELETE /patients/{id}/face`.
 """
 
-from fastapi import APIRouter, HTTPException, Header
-from fastapi.responses import JSONResponse
-import numpy as np
-import os
+from __future__ import annotations
+
 import logging
+from collections import defaultdict
 from typing import List, Optional
 
-from app.services.face_service import (
-    decode_image,
-    get_embedding_async,
-    detect_gender_async,
-    cosine_dist,
-    best_gallery_distance,
-    serialize_embedding,
-    deserialize_embedding,
-    MATCH_THRESHOLD,
-    MAX_GALLERY_SIZE,
-)
-from app.core.database import get_db
-from app.core.schemas import IdentifyRequest, PatientRegister, PatientRead
+import numpy as np
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import JSONResponse
+from sqlalchemy import delete, func, select
+from sqlalchemy.orm import Session
+
+from app.core.config import settings
+from app.core.database import get_session, session_scope
 from app.core.errors import KioskError
+from app.core.models import FaceEmbedding, Patient, iso_z, utcnow
+from app.core.schemas import IdentifyRequest, PatientRead, PatientRegister, PhoneStartRequest, PhoneVerifyRequest
+from app.core.security import (
+    create_phone_verification_token,
+    require_admin,
+    require_kiosk,
+    verified_phone_from_token,
+)
+from app.services.face_service import (
+    MATCH_THRESHOLD,
+    FaceEngineError,
+    SpoofSuspected,
+    warm_state,
+    MAX_GALLERY_SIZE,
+    best_gallery_distance,
+    decode_image,
+    deserialize_embedding,
+    detect_gender_async,
+    get_embedding_async,
+    serialize_embedding,
+)
+from app.services import otp_service
+from app.services.sms import mask_phone, normalize_phone_in, send_otp_sms
 
 logger = logging.getLogger("kiosk.face")
 router = APIRouter(tags=["Face Recognition"])
 
-API_KEY = os.getenv("KIOSK_API_KEY", "dev-key-change-in-production")
-
-
-def verify_api_key(x_api_key: Optional[str] = Header(None)) -> bool:
-    if API_KEY == "dev-key-change-in-production":
-        return True
-    return x_api_key == API_KEY
+# Version of the consent text shown on the kiosk consent screen (CONSENT_VERSION setting).
+CONSENT_VERSION = settings.CONSENT_VERSION
 
 
 # ── Gallery helpers ────────────────────────────────────────────────────────────
 
-def _load_gallery(conn, patient_id: int) -> list:
-    """Load all stored embeddings for a patient from the gallery table."""
-    rows = conn.execute(
-        "SELECT embedding FROM face_embeddings WHERE patient_id = ? ORDER BY id",
-        (patient_id,),
-    ).fetchall()
-    gallery = []
-    for row in rows:
-        emb = deserialize_embedding(row["embedding"])
-        if emb is not None:
-            gallery.append(emb)
-    return gallery
+def _count_gallery(session: Session, patient_id: int) -> int:
+    return int(session.scalar(
+        select(func.count()).select_from(FaceEmbedding).where(FaceEmbedding.patient_id == patient_id)
+    ) or 0)
 
 
-def _count_gallery(conn, patient_id: int) -> int:
-    return conn.execute(
-        "SELECT COUNT(*) FROM face_embeddings WHERE patient_id = ?",
-        (patient_id,),
-    ).fetchone()[0]
-
-
-def _add_to_gallery(conn, patient_id: int, embedding: np.ndarray) -> None:
-    """
-    Add a new embedding to the patient's gallery.
-    If full (>= MAX_GALLERY_SIZE), replace the oldest entry.
-    """
-    count    = _count_gallery(conn, patient_id)
+def _add_to_gallery(session: Session, patient_id: int, embedding: np.ndarray) -> None:
+    """Add an embedding to the patient's gallery; when full, replace the oldest entry."""
     emb_bytes = serialize_embedding(embedding)
-
-    if count >= MAX_GALLERY_SIZE:
-        oldest_id = conn.execute(
-            "SELECT id FROM face_embeddings WHERE patient_id = ? ORDER BY id ASC LIMIT 1",
-            (patient_id,),
-        ).fetchone()["id"]
-        conn.execute(
-            "UPDATE face_embeddings SET embedding = ?, created_at = CURRENT_TIMESTAMP WHERE id = ?",
-            (emb_bytes, oldest_id),
-        )
-        logger.debug(f"[Gallery] Replaced oldest for patient {patient_id} (gallery full at {MAX_GALLERY_SIZE})")
+    if _count_gallery(session, patient_id) >= MAX_GALLERY_SIZE:
+        oldest = session.scalars(
+            select(FaceEmbedding).where(FaceEmbedding.patient_id == patient_id).order_by(FaceEmbedding.id).limit(1)
+        ).first()
+        oldest.embedding = emb_bytes
+        oldest.created_at = utcnow()
     else:
-        conn.execute(
-            "INSERT INTO face_embeddings (patient_id, embedding) VALUES (?, ?)",
-            (patient_id, emb_bytes),
-        )
-        logger.debug(f"[Gallery] Added embedding #{count + 1}/{MAX_GALLERY_SIZE} for patient {patient_id}")
-
-    conn.commit()
+        session.add(FaceEmbedding(patient_id=patient_id, embedding=emb_bytes))
 
 
-def _migrate_legacy_to_gallery(conn, patient_id: int, legacy_emb: np.ndarray) -> None:
-    """
-    Migrate a patient's legacy patients.embedding into the gallery table
-    if their gallery is currently empty. Called lazily on first identify.
-    """
-    if _count_gallery(conn, patient_id) == 0:
-        emb_bytes = serialize_embedding(legacy_emb)
-        conn.execute(
-            "INSERT INTO face_embeddings (patient_id, embedding, angle_hint) VALUES (?, ?, ?)",
-            (patient_id, emb_bytes, "legacy"),
-        )
-        conn.commit()
-        logger.info(f"[Gallery] Migrated legacy embedding for patient {patient_id}")
+AMBIGUOUS = "ambiguous"
 
 
-# ── Core match logic ──────────────────────────────────────────────────────────
-
-def _find_match_sync(conn, embedding: np.ndarray, threshold: float):
-    """
-    Synchronous match logic — runs inside get_db() context.
-    Returns (patient_dict, best_dist, all_distances_log).
-    """
-    patients = conn.execute(
-        "SELECT id, name, gender, age, phone, embedding, visit_count FROM patients"
-    ).fetchall()
-
-    best_dist, best_patient = 1.0, None
-    dist_log = []   # for debug endpoint
-
-    for patient in patients:
-        pid = patient["id"]
-
-        # Load gallery; lazily migrate legacy embedding if needed
-        gallery = _load_gallery(conn, pid)
-        if not gallery and patient["embedding"]:
-            legacy = deserialize_embedding(patient["embedding"])
-            if legacy is not None:
-                _migrate_legacy_to_gallery(conn, pid, legacy)
-                gallery = [legacy]
-
-        if not gallery:
-            dist_log.append({"id": pid, "name": patient["name"], "dist": None, "note": "no embedding"})
+def _find_match(session: Session, embedding: np.ndarray, threshold: float):
+    """Returns (patient | None | AMBIGUOUS, best_dist, per-candidate log)."""
+    consented = set(session.scalars(select(Patient.id).where(Patient.face_consent.is_(True))))
+    galleries: dict[int, list] = defaultdict(list)
+    for pid, emb in session.execute(select(FaceEmbedding.patient_id, FaceEmbedding.embedding)):
+        if pid not in consented:
             continue
+        arr = deserialize_embedding(emb)
+        if arr is not None:
+            galleries[pid].append(arr)
 
+    # Lazily migrate legacy single embeddings into the gallery.
+    migrated = False
+    for pid, emb in session.execute(
+        select(Patient.id, Patient.embedding).where(Patient.embedding.is_not(None), Patient.face_consent.is_(True))
+    ):
+        if pid in galleries:
+            continue
+        arr = deserialize_embedding(emb)
+        if arr is not None:
+            session.add(FaceEmbedding(patient_id=pid, embedding=bytes(emb), angle_hint="legacy"))
+            galleries[pid] = [arr]
+            migrated = True
+    if migrated:
+        session.commit()
+
+    best_dist, best_pid, second_dist = 1.0, None, 1.0
+    dist_log = []
+    for pid, gallery in galleries.items():
         dist = best_gallery_distance(embedding, gallery)
-        dist_log.append({
-            "id":      pid,
-            "name":    patient["name"],
-            "dist":    round(dist, 4),
-            "gallery": len(gallery),
-            "match":   dist <= threshold,
-        })
-
+        dist_log.append({"id": pid, "dist": round(dist, 4), "gallery": len(gallery), "match": dist <= threshold})
         if dist < best_dist:
-            best_dist    = dist
-            best_patient = patient
+            best_dist, best_pid, second_dist = dist, pid, best_dist
+        elif dist < second_dist:
+            second_dist = dist
 
-    match = dict(best_patient) if best_patient and best_dist <= threshold else None
-    return match, best_dist, dist_log
+    if best_pid is None or best_dist > threshold:
+        return None, best_dist, dist_log
+    if second_dist - best_dist < settings.FACE_AMBIGUITY_MARGIN:
+        # Two patients look almost equally close (relatives, twins): never guess.
+        logger.warning("[Face] Ambiguous match: best=%.4f second=%.4f margin=%s",
+                       best_dist, second_dist, settings.FACE_AMBIGUITY_MARGIN)
+        return AMBIGUOUS, best_dist, dist_log
+    return session.get(Patient, best_pid), best_dist, dist_log
 
 
-# ── Endpoints ─────────────────────────────────────────────────────────────────
+def _found_payload(p: Patient, distance: Optional[float] = None) -> dict:
+    out = {
+        "status": "found",
+        "id": p.id,
+        "name": p.name,
+        "gender": p.gender or "Unknown",
+        "age": p.age,
+        "phone": p.phone,
+        "visits": p.visit_count,
+    }
+    if distance is not None:
+        out["distance"] = round(distance, 4)
+    return out
 
-@router.post("/identify")
+
+def _identify_db(embedding: np.ndarray) -> dict:
+    with session_scope() as session:
+        match, dist, dist_log = _find_match(session, embedding, MATCH_THRESHOLD)
+        logger.info("[Face] Identify best_dist=%.4f threshold=%s match=%s candidates=%d",
+                    dist, MATCH_THRESHOLD, "YES" if match else "NO", len(dist_log))
+        for d in dist_log:
+            logger.debug("  candidate id=%s dist=%s gallery=%s", d["id"], d["dist"], d["gallery"])
+        if match is None:
+            return {"match": None, "dist": dist}
+        if match == AMBIGUOUS:
+            return {"match": None, "ambiguous": True, "dist": dist}
+        match.visit_count = (match.visit_count or 0) + 1
+        # Only a clearly-same-person photo may join the gallery; a borderline match
+        # added here would pull the gallery towards a different person over time.
+        if dist <= settings.FACE_GALLERY_UPDATE_MAX_DIST:
+            _add_to_gallery(session, match.id, embedding)
+        session.flush()
+        return {"match": _found_payload(match, dist), "dist": dist}
+
+
+# ── Kiosk endpoints ───────────────────────────────────────────────────────────
+
+def _face_unavailable() -> KioskError:
+    return KioskError(
+        "Face scan is not available right now. Please check in with your mobile number.",
+        "முக ஸ்கேன் இப்போது கிடைக்கவில்லை. உங்கள் மொபைல் எண் மூலம் பதிவு செய்யவும்.",
+        status_code=503,
+    )
+
+
+def _require_face_engine() -> None:
+    """503 while models are still downloading/loading or after a failed load."""
+    state = warm_state()["state"]
+    if state in ("warming", "failed"):
+        raise _face_unavailable()
+
+
+@router.post("/identify", dependencies=[Depends(require_kiosk)])
 async def identify(req: IdentifyRequest):
     """Identify patient — multi-shot gallery matching."""
     try:
@@ -166,205 +197,280 @@ async def identify(req: IdentifyRequest):
     except ValueError as e:
         raise KioskError(str(e), "தவறான படம்.", status_code=400)
 
-    embedding = await get_embedding_async(img)
+    _require_face_engine()
+    try:
+        embedding = await get_embedding_async(img)
+    except SpoofSuspected:
+        # Looks like a photo/screen. Not an accusation: route to phone check-in.
+        return {"status": "spoof"}
+    except FaceEngineError:
+        raise _face_unavailable()
     if embedding is None:
-        return JSONResponse({
-            "status":  "no_face",
-            "message": "No face detected — please look straight at the camera",
-        })
+        return JSONResponse({"status": "no_face", "message": "No face detected — please look straight at the camera"})
 
     try:
-        with get_db() as conn:
-            match, dist, dist_log = _find_match_sync(conn, embedding, MATCH_THRESHOLD)
+        result = await run_in_threadpool(_identify_db, embedding)
     except Exception as e:
-        logger.error(f"[Face] DB search error: {e}")
+        logger.error("[Face] DB search error: %s", e)
         raise KioskError("Database search failed.", "தரவுத்தள தேடல் தோல்வி.", status_code=500)
 
-    # Always log distances so we can tune threshold from server logs
-    logger.info(f"[Face] Identify — best_dist={dist:.4f} threshold={MATCH_THRESHOLD} match={'YES' if match else 'NO'}")
-    for d in dist_log:
-        logger.info(f"  candidate id={d['id']} name={d['name']} dist={d.get('dist')} gallery={d.get('gallery', 0)}")
+    if result["match"]:
+        return result["match"]
+    if result.get("ambiguous"):
+        # Nothing about either candidate leaves the server; phone + OTP decides.
+        return {"status": "ambiguous"}
 
-    if match:
-        pid = match["id"]
-        with get_db() as conn:
-            conn.execute("UPDATE patients SET visit_count = visit_count + 1 WHERE id = ?", (pid,))
-            # Online learning: add new embedding to gallery
-            _add_to_gallery(conn, pid, embedding)
-            updated = conn.execute(
-                "SELECT visit_count FROM patients WHERE id = ?", (pid,)
-            ).fetchone()
+    if req.match_only:
+        # Pre-consent scan: nothing about a non-matching visitor leaves the server or is stored.
+        return {"status": "new"}
 
-        return {
-            "status":   "found",
-            "id":       pid,
-            "name":     match["name"],
-            "gender":   match["gender"] or "Unknown",
-            "age":      match["age"],
-            "phone":    match["phone"],
-            "visits":   updated["visit_count"],
-            "distance": round(dist, 4),
-        }
-
-    # New visitor
-    gender    = await detect_gender_async(img)
-    emb_bytes = serialize_embedding(embedding)
-    logger.info(f"[Face] New visitor — closest_dist={dist:.4f} (threshold={MATCH_THRESHOLD})")
-    return {
-        "status":    "new",
-        "gender":    gender,
-        "embedding": emb_bytes.hex(),
-    }
+    gender = await detect_gender_async(img)
+    logger.info("[Face] New visitor — closest_dist=%.4f", result["dist"])
+    return {"status": "new", "gender": gender, "embedding": serialize_embedding(embedding).hex()}
 
 
-@router.post("/identify/debug")
+@router.post("/register", dependencies=[Depends(require_kiosk)])
+def register(patient: PatientRegister, session: Session = Depends(get_session)):
+    """Register a new patient and (only with explicit consent) seed the face gallery."""
+    face_consent = bool(patient.face_consent)
+    if patient.embedding and not face_consent:
+        logger.info("[Face] Embedding supplied without face consent — discarded")
+
+    phone = normalize_phone_in(patient.phone) or patient.phone
+    if not (face_consent and patient.embedding):
+        # No face template → the visitor must have verified this phone by OTP.
+        verified = verified_phone_from_token(patient.phone_verification_token)
+        if verified is None:
+            raise KioskError(
+                "Please verify your mobile number before registering.",
+                "பதிவு செய்வதற்கு முன் உங்கள் மொபைல் எண்ணைச் சரிபார்க்கவும்.",
+                status_code=403,
+            )
+        if normalize_phone_in(patient.phone) != verified:
+            raise KioskError(
+                "The mobile number does not match the verified number.",
+                "மொபைல் எண் சரிபார்க்கப்பட்ட எண்ணுடன் பொருந்தவில்லை.",
+                status_code=403,
+            )
+
+    embedding_arr = None
+    emb_bytes = None
+    if patient.embedding and face_consent:
+        try:
+            emb_bytes = bytes.fromhex(patient.embedding)
+        except ValueError as e:
+            raise KioskError(f"Invalid embedding: {e}", "தவறான embedding", status_code=400)
+        embedding_arr = deserialize_embedding(emb_bytes)
+        if embedding_arr is None:
+            raise KioskError("Invalid embedding: bad size", "தவறான embedding", status_code=400)
+
+    row = Patient(
+        name=patient.name,
+        gender=patient.gender,
+        age=patient.age,
+        phone=phone,
+        blood_group=patient.blood_group,
+        city=patient.city,
+        embedding=emb_bytes,
+        consent_given=face_consent,
+        face_consent=face_consent,
+        consent_at=utcnow() if face_consent else None,
+        consent_version=CONSENT_VERSION if face_consent else None,
+    )
+    session.add(row)
+    session.flush()
+    if embedding_arr is not None:
+        _add_to_gallery(session, row.id, embedding_arr)
+    session.commit()
+
+    logger.info("[Face] Registered patient id=%s face_consent=%s gallery=%s",
+                row.id, face_consent, "seeded" if embedding_arr is not None else "empty")
+    return {"status": "registered", "id": row.id, "name": row.name}
+
+
+# ── Phone identification (face opt-out) ───────────────────────────────────────
+
+def _require_phone(raw: str) -> str:
+    phone = normalize_phone_in(raw)
+    if not phone:
+        raise KioskError("Please enter a valid 10-digit mobile number.",
+                         "சரியான 10 இலக்க மொபைல் எண்ணை உள்ளிடவும்.", status_code=400)
+    return phone
+
+
+def _patients_by_phone(session: Session, phone_e164: str) -> list[Patient]:
+    # Stored numbers may contain spaces/dashes (older kiosks); narrow by the last 4 digits,
+    # then compare normalised values.
+    last4 = phone_e164[-4:]
+    rows = session.scalars(
+        select(Patient).where(Patient.phone.like(f"%{last4}"))
+        .order_by(Patient.created_at.desc(), Patient.id.desc())
+    ).all()
+    return [p for p in rows if normalize_phone_in(p.phone) == phone_e164]
+
+
+@router.post("/identify/phone/start", dependencies=[Depends(require_kiosk)])
+def identify_phone_start(req: PhoneStartRequest, session: Session = Depends(get_session)):
+    """Send a 6-digit code by SMS. Same response whether or not the number is registered."""
+    phone = _require_phone(req.phone)
+    try:
+        otp = otp_service.start(session, phone)
+    except otp_service.OtpRateLimited:
+        raise KioskError(
+            "Too many codes requested. Please wait a few minutes or ask at the front desk.",
+            "அதிக முறை குறியீடு கேட்கப்பட்டது. சில நிமிடங்கள் கழித்து முயற்சிக்கவும் அல்லது வரவேற்பில் கேளுங்கள்.",
+            status_code=429,
+        )
+    sms_status = send_otp_sms(phone, otp)
+    logger.info("[Phone] OTP issued to %s sms=%s", mask_phone(phone), sms_status)
+    return {"status": "otp_sent"}
+
+
+@router.post("/identify/phone/verify", dependencies=[Depends(require_kiosk)])
+def identify_phone_verify(req: PhoneVerifyRequest, session: Session = Depends(get_session)):
+    """Check the code. Found → same shape as /identify (plus `other_patients` sharing the number); else `new`."""
+    phone = _require_phone(req.phone)
+    result = otp_service.verify(session, phone, req.otp)
+    if not result.ok:
+        if result.reason == "invalid":
+            raise KioskError(
+                f"Incorrect code. {result.attempts_left} attempt(s) left.",
+                f"தவறான குறியீடு. இன்னும் {result.attempts_left} முயற்சி(கள்) உள்ளன.",
+                status_code=400,
+            )
+        if result.reason == "expired":
+            raise KioskError("This code has expired. Please request a new one.",
+                             "குறியீடு காலாவதியானது. புதிய குறியீட்டைக் கேளுங்கள்.", status_code=400)
+        raise KioskError("Too many wrong attempts. Please request a new code.",
+                         "அதிக தவறான முயற்சிகள். புதிய குறியீட்டைக் கேளுங்கள்.", status_code=429)
+
+    patients = _patients_by_phone(session, phone)
+    if not patients:
+        logger.info("[Phone] Verified %s — no patient, continue to registration", mask_phone(phone))
+        return {"status": "new", "phone": phone,
+                "phone_verification_token": create_phone_verification_token(phone)}
+
+    match = patients[0]
+    match.visit_count = (match.visit_count or 0) + 1
+    session.commit()
+    logger.info("[Phone] Verified %s — patient id=%s (others=%d)", mask_phone(phone), match.id, len(patients) - 1)
+    out = _found_payload(match)
+    out["other_patients"] = [_found_payload(p) for p in patients[1:]]
+    # Lets the kiosk register another person sharing this number (e.g. a child).
+    out["phone_verification_token"] = create_phone_verification_token(phone)
+    return out
+
+
+# ── Admin endpoints ───────────────────────────────────────────────────────────
+
+@router.post("/identify/debug", dependencies=[Depends(require_admin)])
 async def identify_debug(req: IdentifyRequest):
-    """
-    Debug endpoint — returns cosine distances to ALL patients without side effects.
-    Use this to tune the threshold.
-    """
+    """Admin-only threshold tuning: distances to all patients, no side effects. Disabled in prod."""
+    if settings.is_prod:
+        raise HTTPException(404, "Not found")
     try:
         img = decode_image(req.image)
     except ValueError as e:
         return {"error": str(e)}
 
-    embedding = await get_embedding_async(img)
+    try:
+        embedding = await get_embedding_async(img)
+    except SpoofSuspected:
+        return {"status": "spoof", "candidates": []}
+    except FaceEngineError as e:
+        return {"status": "engine_error", "error": str(e), "candidates": []}
     if embedding is None:
         return {"status": "no_face", "candidates": []}
 
-    with get_db() as conn:
-        match, dist, dist_log = _find_match_sync(conn, embedding, MATCH_THRESHOLD)
+    def _run():
+        with session_scope() as session:
+            match, dist, dist_log = _find_match(session, embedding, MATCH_THRESHOLD)
+            names = dict(session.execute(select(Patient.id, Patient.name)).all())
+            for d in dist_log:
+                d["name"] = names.get(d["id"])
+            if match == AMBIGUOUS:
+                return AMBIGUOUS, dist, dist_log
+            return (match.name if match else None), dist, dist_log
 
+    would_match, dist, dist_log = await run_in_threadpool(_run)
     return {
-        "status":       "found" if match else "no_match",
-        "best_dist":    round(dist, 4),
-        "threshold":    MATCH_THRESHOLD,
-        "would_match":  match["name"] if match else None,
-        "candidates":   sorted(dist_log, key=lambda x: x.get("dist") or 9),
+        "status": AMBIGUOUS if would_match == AMBIGUOUS else ("found" if would_match else "no_match"),
+        "best_dist": round(dist, 4),
+        "threshold": MATCH_THRESHOLD,
+        "would_match": would_match,
+        "candidates": sorted(dist_log, key=lambda x: x.get("dist") or 9),
     }
 
 
-@router.post("/register")
-async def register(patient: PatientRegister, x_api_key: Optional[str] = Header(None)):
-    """Register new patient and seed the face gallery."""
-    if not verify_api_key(x_api_key):
-        raise HTTPException(status_code=403, detail="Invalid or missing API key")
-
-    try:
-        emb_bytes     = None
-        embedding_arr = None
-        if patient.embedding:
-            try:
-                emb_bytes     = bytes.fromhex(patient.embedding)
-                embedding_arr = deserialize_embedding(emb_bytes)
-                if embedding_arr is None:
-                    raise ValueError("Invalid embedding bytes")
-            except ValueError as e:
-                raise KioskError(f"Invalid embedding: {e}", "தவறான embedding", status_code=400)
-
-        with get_db() as conn:
-            cur = conn.execute(
-                """INSERT INTO patients
-                   (name, gender, age, phone, blood_group, city, embedding, consent_given)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    patient.name, patient.gender, patient.age,
-                    patient.phone, patient.blood_group, patient.city,
-                    emb_bytes, 1,
-                ),
-            )
-            new_id = cur.lastrowid
-            conn.commit()
-
-            # Seed gallery immediately on registration
-            if embedding_arr is not None:
-                _add_to_gallery(conn, new_id, embedding_arr)
-
-        logger.info(f"[Face] Registered patient id={new_id} name={patient.name} gallery={'seeded' if embedding_arr is not None else 'empty'}")
-        return {"status": "registered", "id": new_id, "name": patient.name}
-
-    except KioskError:
-        raise
-    except Exception as e:
-        logger.error(f"Registration error: {e}")
-        raise KioskError("Registration failed.", "பதிவு தோல்வியடைந்தது.", status_code=500)
+@router.get("/patients", response_model=List[PatientRead], dependencies=[Depends(require_admin)])
+def list_patients(session: Session = Depends(get_session)):
+    rows = session.scalars(select(Patient).order_by(Patient.id.desc())).all()
+    return [
+        {
+            "id": p.id, "name": p.name, "gender": p.gender, "age": p.age, "phone": p.phone,
+            "blood_group": p.blood_group, "visit_count": p.visit_count,
+            "created_at": iso_z(p.created_at), "face_consent": bool(p.face_consent),
+        }
+        for p in rows
+    ]
 
 
-# ── Admin ─────────────────────────────────────────────────────────────────────
-
-@router.get("/patients", response_model=List[PatientRead])
-async def list_patients():
-    with get_db() as conn:
-        rows = conn.execute(
-            "SELECT id, name, gender, age, phone, blood_group, visit_count, created_at "
-            "FROM patients ORDER BY id DESC"
-        ).fetchall()
-    return [dict(r) for r in rows]
-
-
-@router.get("/patients/{pid}/gallery")
-async def patient_gallery_info(pid: int):
-    """How many gallery embeddings does this patient have?"""
-    with get_db() as conn:
-        patient = conn.execute("SELECT id, name FROM patients WHERE id = ?", (pid,)).fetchone()
-        if not patient:
-            raise HTTPException(404, "Patient not found")
-        count = _count_gallery(conn, pid)
+@router.get("/patients/{pid}/gallery", dependencies=[Depends(require_admin)])
+def patient_gallery_info(pid: int, session: Session = Depends(get_session)):
+    patient = session.get(Patient, pid)
+    if patient is None:
+        raise HTTPException(404, "Patient not found")
     return {
-        "patient_id":    pid,
-        "name":          patient["name"],
-        "gallery_count": count,
-        "max_gallery":   MAX_GALLERY_SIZE,
-        "threshold":     MATCH_THRESHOLD,
+        "patient_id": pid,
+        "name": patient.name,
+        "gallery_count": _count_gallery(session, pid),
+        "max_gallery": MAX_GALLERY_SIZE,
+        "threshold": MATCH_THRESHOLD,
     }
 
 
-@router.post("/patients/migrate-gallery")
-async def migrate_all_to_gallery():
-    """
-    One-time migration: copy the legacy patients.embedding into face_embeddings
-    for any patient who has an embedding but no gallery entries yet.
-    Run this once after upgrading to the multi-shot gallery system.
-    """
+@router.post("/patients/migrate-gallery", dependencies=[Depends(require_admin)])
+def migrate_all_to_gallery(session: Session = Depends(get_session)):
+    """Copy legacy patients.embedding into face_embeddings for patients with no gallery yet."""
     migrated, skipped = 0, 0
-    with get_db() as conn:
-        patients = conn.execute("SELECT id, name, embedding FROM patients").fetchall()
-        for p in patients:
-            if not p["embedding"]:
-                skipped += 1
-                continue
-            if _count_gallery(conn, p["id"]) > 0:
-                skipped += 1
-                continue
-            emb = deserialize_embedding(p["embedding"])
-            if emb is None:
-                skipped += 1
-                continue
-            conn.execute(
-                "INSERT INTO face_embeddings (patient_id, embedding, angle_hint) VALUES (?, ?, ?)",
-                (p["id"], p["embedding"], "legacy"),
-            )
-            migrated += 1
-            logger.info(f"[Migrate] patient id={p['id']} name={p['name']}")
-        conn.commit()
-
-    return {
-        "status":   "done",
-        "migrated": migrated,
-        "skipped":  skipped,
-        "message":  f"Migrated {migrated} patients into face gallery",
-    }
+    with_gallery = set(session.scalars(select(FaceEmbedding.patient_id).distinct()))
+    for pid, emb in session.execute(select(Patient.id, Patient.embedding)):
+        if not emb or pid in with_gallery or deserialize_embedding(emb) is None:
+            skipped += 1
+            continue
+        session.add(FaceEmbedding(patient_id=pid, embedding=bytes(emb), angle_hint="legacy"))
+        migrated += 1
+    session.commit()
+    logger.info("[Migrate] gallery migrated=%d skipped=%d", migrated, skipped)
+    return {"status": "done", "migrated": migrated, "skipped": skipped,
+            "message": f"Migrated {migrated} patients into face gallery"}
 
 
-@router.delete("/patients/{pid}")
-async def delete_patient(pid: int, x_api_key: Optional[str] = Header(None)):
-    if not verify_api_key(x_api_key):
-        raise HTTPException(status_code=403, detail="Invalid or missing API key")
-    try:
-        with get_db() as conn:
-            conn.execute("DELETE FROM patients WHERE id = ?", (pid,))
-            conn.commit()
-        return {"status": "deleted", "id": pid}
-    except Exception as e:
-        logger.error(f"Delete error: {e}")
-        raise HTTPException(500, "Failed to delete patient")
+@router.delete("/patients/{pid}/face", dependencies=[Depends(require_admin)])
+def delete_patient_face(pid: int, session: Session = Depends(get_session)):
+    """Withdraw face consent: delete all face templates and stop face matching for this patient."""
+    patient = session.get(Patient, pid)
+    if patient is None:
+        raise HTTPException(404, "Patient not found")
+    deleted = session.execute(delete(FaceEmbedding).where(FaceEmbedding.patient_id == pid)).rowcount or 0
+    patient.embedding = None
+    patient.face_consent = False
+    patient.consent_given = False
+    patient.consent_at = None
+    patient.consent_version = None
+    session.commit()
+    logger.info("[Face] Deleted face data for patient id=%s (templates=%d)", pid, deleted)
+    return {"status": "face_deleted", "id": pid, "templates_deleted": deleted, "face_consent": False}
+
+
+@router.delete("/patients/{pid}", dependencies=[Depends(require_admin)])
+def delete_patient(pid: int, session: Session = Depends(get_session)):
+    patient = session.get(Patient, pid)
+    if patient is None:
+        raise HTTPException(404, "Patient not found")
+    # Explicit child deletes so this also works where FK cascades are not enforced.
+    session.execute(delete(FaceEmbedding).where(FaceEmbedding.patient_id == pid))
+    session.delete(patient)
+    session.commit()
+    logger.info("[Face] Deleted patient id=%s", pid)
+    return {"status": "deleted", "id": pid}

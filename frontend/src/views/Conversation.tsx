@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { useKioskStore } from '../store/useKioskStore';
+import { useKioskStore, deptLabel, findDepartment, TriageData } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
 import { useVoiceTriage, VoiceError } from '../hooks/useVoiceTriage';
 import { useConversation } from '../hooks/useConversation';
-import { faceApi } from '../services/api';
+import { faceApi, bookAppointment, errorDetail, Urgency } from '../services/api';
 import { Mic, MicOff, Square, Loader2, Bot, User, ChevronRight, AlertTriangle, Calendar } from 'lucide-react';
 import StepBar from '../components/StepBar';
 
@@ -13,19 +13,6 @@ const VOICE_ERROR_MSG: Record<string, string> = {
   too_short:             'That was too short — hold the mic longer and speak clearly.',
   transcribe_failed:     'Voice processing failed. Please try again or use the touch menu.',
   no_speech:             "I didn't catch any words — please try speaking again.",
-};
-
-// Department display names map (matches backend dept_id)
-const DEPT_DISPLAY: Record<string, { name: string; nameTa: string }> = {
-  general:   { name: 'General OPD',    nameTa: 'பொது OPD' },
-  cardio:    { name: 'Cardiology',     nameTa: 'இதய நோய்கள்' },
-  ortho:     { name: 'Orthopedics',    nameTa: 'எலும்பு அறுவை சிகிச்சை' },
-  paeds:     { name: 'Paediatrics',    nameTa: 'குழந்தை நோய்' },
-  gyne:      { name: 'Gynaecology',    nameTa: 'மகளிர் நோய்கள்' },
-  derm:      { name: 'Dermatology',    nameTa: 'தோல் நோய்கள்' },
-  ent:       { name: 'ENT',            nameTa: 'காது மூக்கு தொண்டை' },
-  ophthal:   { name: 'Ophthalmology',  nameTa: 'கண் நோய்கள்' },
-  emergency: { name: 'Emergency',      nameTa: 'அவசர சிகிச்சை' },
 };
 
 interface Doctor {
@@ -38,19 +25,34 @@ interface Doctor {
 interface PendingBooking {
   dept_id:   string;
   dept_name: string;
-  room:      string;
-  wait_mins: number;
   symptoms:  string | null;
-  service:   string;
-  urgency:   string;
+  service:   NonNullable<TriageData['service']>;
+  urgency:   Urgency;
+  escalation_reasons: string[];
   reply:     string;
   doctor_id:   number | null;
   doctor_name: string | null;
   doctors:     Doctor[];
 }
 
+interface TriageResponse {
+  dept_id?: string;
+  dept_name?: string;
+  symptoms?: string;
+  service?: string;
+  urgency?: string;
+  reply?: string;
+  escalation_reasons?: string[];
+}
+
+const SERVICES: ReadonlyArray<NonNullable<TriageData['service']>> = ['symptoms', 'appointment', 'followup', 'emergency'];
+const toService = (v: unknown): NonNullable<TriageData['service']> =>
+  SERVICES.find((x) => x === v) ?? 'symptoms';
+const toUrgency = (v: unknown): Urgency =>
+  v === 'urgent' || v === 'emergency' ? v : 'normal';
+
 const Conversation: React.FC = () => {
-  const { patient, language, setStep, setTriage, setToken } = useKioskStore();
+  const { patient, language, setStep, setTriage, setBooking, departments } = useKioskStore();
   const { speak, cancel: stopTTS, isSpeaking } = useTTS();
 
 
@@ -78,7 +80,7 @@ const Conversation: React.FC = () => {
     welcomeSpokenRef.current = true;
     const name = patient?.name?.split(' ')[0] || 'there';
     const welcome =
-      `Welcome back, ${name}! I'm your AI assistant. ` +
+      `${(patient?.visits ?? 0) > 1 ? 'Welcome back' : 'Welcome'}, ${name}! I'm your AI assistant. ` +
       `Please tell me your symptoms or say which department you'd like to visit, ` +
       `and I'll book your appointment right away.`;
     addMessage('ai', welcome);
@@ -168,7 +170,10 @@ const Conversation: React.FC = () => {
   // ── Triage: ask LLM for dept routing ──────────────────────────────────────
   const runTriage = async (text: string, intent: string) => {
     try {
-      const res = await faceApi.post('/conversation/triage', { text, language: 'en' });
+      // patient_id lets the server add today's vitals (NEWS2) and age to the safety rules.
+      const res = await faceApi.post<TriageResponse>('/conversation/triage', {
+        text, language: 'en', patient_id: patient?.id ?? null, age: patient?.age ?? null,
+      });
       const data = res.data;
 
       const deptId = data.dept_id || 'general';
@@ -180,14 +185,15 @@ const Conversation: React.FC = () => {
         doctors = (docRes.data?.doctors || []).filter((d: Doctor) => d.available);
       } catch { /* ignore */ }
 
+      // Names/rooms/waits come from GET /departments, never from the LLM response.
+      const known = findDepartment(departments, deptId);
       const booking: PendingBooking = {
-        dept_id:   deptId,
-        dept_name: data.dept_name || 'General OPD',
-        room:      data.room      || 'OPD-1',
-        wait_mins: data.wait_mins ?? 20,
+        dept_id:   known ? deptId : 'general',
+        dept_name: known ? known.name_en : (data.dept_name || 'General Medicine'),
         symptoms:  data.symptoms  || text,
-        service:   data.service   || intent,
-        urgency:   data.urgency   || 'normal',
+        service:   toService(data.service || intent),
+        urgency:   toUrgency(data.urgency),
+        escalation_reasons: data.escalation_reasons ?? [],
         reply:     data.reply     || '',
         doctor_id:   null,
         doctor_name: null,
@@ -199,17 +205,16 @@ const Conversation: React.FC = () => {
         const urgentMsg = '🚨 This sounds urgent! I am booking you into Emergency right now.';
         addMessage('ai', urgentMsg);
         speak(urgentMsg, 'en');
-        await doBook({ ...booking, dept_id: 'emergency', dept_name: 'Emergency', room: 'Emergency', wait_mins: 0 });
+        await doBook({ ...booking, dept_id: 'emergency', dept_name: 'Emergency', service: 'emergency', urgency: 'emergency' });
         return;
       }
 
-      const deptDisplay = DEPT_DISPLAY[booking.dept_id] || { name: booking.dept_name };
+      const bd = findDepartment(departments, booking.dept_id);
       const docNames = doctors.map(d => d.name).join(' or ');
       const docPart = docNames ? ` Available doctors: ${docNames}.` : '';
       const confirmMsg =
         `${data.reply || ''} ` +
-        `I'll book you into ${deptDisplay.name}, ${booking.room}. ` +
-        `Estimated wait: ~${booking.wait_mins} minutes.${docPart} ` +
+        `I'll book you into ${booking.dept_name}${bd ? `, ${bd.room}` : ''}.${docPart} ` +
         `Shall I confirm? You can also say a doctor's name if you have a preference.`;
 
       addMessage('ai', confirmMsg);
@@ -224,61 +229,67 @@ const Conversation: React.FC = () => {
     }
   };
 
-  // ── Book: call backend, store result, navigate to CONFIRM ─────────────────
+  // ── Book ───────────────────────────────────────────────────────────────────
+  // Emergencies are booked immediately. Everything else continues to VITALS and
+  // is booked on the CONFIRM step, where the patient can opt in to SMS.
   const doBook = async (booking: PendingBooking) => {
     if (!patient?.id) {
       addMessage('ai', "I can't find your patient record. Please register first.");
       return;
     }
 
-    setIsBooking(true);
     setPendingBooking(null);
-    addMessage('ai', `Booking your appointment at ${booking.dept_name}…`);
+    const baseTriage = {
+      service:    booking.service,
+      symptoms:   booking.symptoms || '',
+      deptId:     booking.dept_id,
+      urgency:    booking.urgency,
+      escalationReasons: booking.escalation_reasons,
+      doctorId:   booking.doctor_id || null,
+      doctorName: booking.doctor_name || '',
+    };
 
+    if (booking.urgency !== 'emergency') {
+      setTriage(baseTriage);
+      const msg = `Great. Let's check your vitals, then I'll issue your token for ${booking.dept_name}.`;
+      addMessage('ai', msg);
+      speak(msg, 'en');
+      setTimeout(() => setStep('VITALS'), 2000);
+      return;
+    }
+
+    setIsBooking(true);
+    addMessage('ai', `Booking your appointment at ${booking.dept_name}…`);
     try {
-      const res = await faceApi.post('/appointment/book', {
+      const appt = await bookAppointment({
         patient_id:  patient.id,
         dept_id:     booking.dept_id,
-        dept_name:   booking.dept_name,
-        room:        booking.room,
         symptoms:    booking.symptoms,
         service:     booking.service,
-        wait_mins:   booking.wait_mins,
+        urgency:     booking.urgency,
+        sms_opt_in:  false,
         doctor_id:   booking.doctor_id || null,
         doctor_name: booking.doctor_name || null,
       });
 
-      const appt = res.data;
-      const deptDisplay = DEPT_DISPLAY[booking.dept_id] || { name: booking.dept_name };
+      setTriage(baseTriage);
+      setBooking(appt);
 
-      // Store triage info + token in kiosk store
-      setTriage({
-        service:    booking.service as any,
-        symptoms:   booking.symptoms || '',
-        deptId:     booking.dept_id,
-        deptName:   deptDisplay.name,
-        deptNameTa: deptDisplay.nameTa || deptDisplay.name,
-        room:       booking.room,
-        waitMins:   booking.wait_mins,
-        doctorId:   booking.doctor_id || null,
-        doctorName: booking.doctor_name || '',
-      });
-      setToken(appt.token);
-
-      const docInfo = booking.doctor_name ? ` Your doctor: ${booking.doctor_name}.` : '';
+      const docInfo = appt.doctor_name ? ` Your doctor: ${appt.doctor_name}.` : '';
       const doneMsg =
         `✅ You're booked! Token: ${appt.token}. ` +
-        `Please go to ${booking.dept_name}, ${booking.room}.${docInfo} ` +
-        `Estimated wait: ~${booking.wait_mins} minutes.`;
+        `Please go to ${appt.dept_name}, ${appt.room}.${docInfo} ` +
+        (appt.wait_mins > 0 ? `Estimated wait: ~${appt.wait_mins} minutes.` : 'You will be seen immediately.');
       addMessage('ai', doneMsg);
       speak(doneMsg, 'en');
 
-      // Navigate to vitals form after brief pause
-      setTimeout(() => setStep('VITALS'), 2500);
+      // Emergency: show the large "go to ER now" screen (staff are alerted via the queue).
+      setTimeout(() => setStep(appt.urgency === 'emergency' ? 'EMERGENCY' : 'VITALS'), 1500);
 
-    } catch (err: any) {
+    } catch (err) {
       console.error('[Conversation] Booking failed:', err);
-      const msg = err?.response?.data?.detail || "Booking failed. Please try again.";
+      if (booking.urgency === 'emergency') { setStep('EMERGENCY'); return; }
+      const msg = errorDetail(err, 'Booking failed. Please try again.');
       addMessage('ai', msg);
       speak(msg, 'en');
     } finally {
@@ -323,9 +334,8 @@ const Conversation: React.FC = () => {
                 <span className="font-bold text-[#1A2B4A]">Confirm Appointment</span>
               </div>
               <div className="space-y-1 text-sm text-[#4A5C78] mb-3">
-                <p><span className="font-semibold">Department:</span> {pendingBooking.dept_name}</p>
-                <p><span className="font-semibold">Room:</span> {pendingBooking.room}</p>
-                <p><span className="font-semibold">Est. Wait:</span> ~{pendingBooking.wait_mins} min</p>
+                <p><span className="font-semibold">Department:</span> {deptLabel(findDepartment(departments, pendingBooking.dept_id), language) || pendingBooking.dept_name}</p>
+                <p><span className="font-semibold">Room:</span> {findDepartment(departments, pendingBooking.dept_id)?.room ?? '—'}</p>
                 {pendingBooking.symptoms && (
                   <p><span className="font-semibold">Reason:</span> {pendingBooking.symptoms}</p>
                 )}
@@ -371,7 +381,7 @@ const Conversation: React.FC = () => {
                   onClick={() => doBook(pendingBooking)}
                   className="flex-1 bg-[#2E7D96] text-white py-2 rounded-xl font-bold hover:bg-[#236d84] active:scale-95 transition-all"
                 >
-                  ✓ Yes, Book It
+                  ✓ Yes, Continue
                 </button>
                 <button
                   onClick={() => {

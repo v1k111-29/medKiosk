@@ -1,150 +1,109 @@
-from pathlib import Path
-import sqlite3
+"""
+Database engine, sessions and migrations (SQLAlchemy 2.0, sync).
+
+- SQLite (dev default) and PostgreSQL (psycopg v3) are both supported.
+- Schema is managed only by Alembic (`alembic/`). `run_migrations()` is called on
+  startup and upgrades to head.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Iterator
 from contextlib import contextmanager
 
-# Canonical DB path: project root (parent of app/)
-BASE_DIR = Path(__file__).parent.parent.parent.resolve()
-DB_PATH = BASE_DIR / "patients.db"
+from sqlalchemy import create_engine, event, inspect
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.core.config import BASE_DIR, settings
+
+logger = logging.getLogger("kiosk.db")
+
+BASELINE_REVISION = "0001_baseline"
+_LEGACY_TABLES = {"patients", "vitals", "appointments", "face_embeddings", "doctors"}
+
+
+def _make_engine() -> Engine:
+    url = settings.database_url
+    if url.startswith("sqlite"):
+        eng = create_engine(
+            url,
+            connect_args={"check_same_thread": False, "timeout": 30},
+            pool_pre_ping=True,
+        )
+
+        @event.listens_for(eng, "connect")
+        def _sqlite_pragmas(dbapi_conn, _record):  # pragma: no cover - driver hook
+            cur = dbapi_conn.cursor()
+            cur.execute("PRAGMA foreign_keys = ON")
+            cur.execute("PRAGMA journal_mode = WAL")
+            cur.execute("PRAGMA busy_timeout = 30000")
+            cur.close()
+
+        return eng
+    return create_engine(url, pool_pre_ping=True, pool_size=10, max_overflow=20)
+
+
+engine: Engine = _make_engine()
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+def get_session() -> Iterator[Session]:
+    """FastAPI dependency: one session per request."""
+    session = SessionLocal()
+    try:
+        yield session
+    except Exception:
+        session.rollback()
+        raise
+    finally:
+        session.close()
 
 
 @contextmanager
-def get_db():
-    """Context manager for database connections with proper cleanup."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+def session_scope() -> Iterator[Session]:
+    """Session for non-request code (startup, websockets, background work)."""
+    session = SessionLocal()
     try:
-        yield conn
+        yield session
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
     finally:
-        conn.close()
+        session.close()
 
 
-def get_db_conn():
-    """Get a raw database connection (caller must close)."""
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+def _alembic_config():
+    from alembic.config import Config
+
+    cfg = Config(str(BASE_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BASE_DIR / "alembic"))
+    # Do not let alembic's fileConfig() replace the app's logging setup.
+    cfg.attributes["configure_logger"] = False
+    return cfg
 
 
-def init_db():
-    """Initialize database tables."""
-    with get_db() as conn:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS patients (
-                id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-                name         TEXT     NOT NULL,
-                gender       TEXT,
-                age          INTEGER,
-                phone        TEXT,
-                blood_group  TEXT,
-                city         TEXT,
-                embedding    BLOB,
-                consent_given BOOLEAN DEFAULT 0,
-                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP,
-                visit_count  INTEGER  DEFAULT 1
+def run_migrations() -> None:
+    """Upgrade the database to the latest Alembic revision.
+
+    A pre-Alembic database (tables created by the old raw-sqlite3 init_db) is
+    adopted by stamping it at the baseline revision first, then upgraded.
+    """
+    from alembic import command
+
+    cfg = _alembic_config()
+    tables = set(inspect(engine).get_table_names())
+    if "alembic_version" not in tables and tables & _LEGACY_TABLES:
+        missing = _LEGACY_TABLES - tables
+        appt_cols = {c["name"] for c in inspect(engine).get_columns("appointments")} if "appointments" in tables else set()
+        if missing or not {"doctor_id", "doctor_name"} <= appt_cols:
+            raise RuntimeError(
+                "Found an old database that does not match the v2 schema "
+                f"(missing tables: {sorted(missing)}). Back it up and remove it, or migrate it manually."
             )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS vitals (
-                id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-                patient_id   INTEGER  NOT NULL
-                             REFERENCES patients(id) ON DELETE CASCADE,
-                height       REAL,
-                weight       REAL,
-                bp_sys       INTEGER,
-                bp_dia       INTEGER,
-                spo2         REAL,
-                diabetes     BOOLEAN  DEFAULT 0,
-                hypertension BOOLEAN  DEFAULT 0,
-                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS appointments (
-                id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-                patient_id   INTEGER  NOT NULL
-                             REFERENCES patients(id) ON DELETE CASCADE,
-                token        TEXT     NOT NULL,
-                dept_id      TEXT     NOT NULL,
-                dept_name    TEXT     NOT NULL,
-                room         TEXT,
-                symptoms     TEXT,
-                service      TEXT     DEFAULT 'symptoms',
-                status       TEXT     DEFAULT 'waiting',
-                wait_mins    INTEGER  DEFAULT 15,
-                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        # ── Face embedding gallery (multi-shot, per patient) ──────────────────
-        # Stores up to MAX_EMBEDDINGS_PER_PATIENT embeddings per patient.
-        # This allows matching across angles, lighting, and ageing variation.
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS face_embeddings (
-                id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-                patient_id   INTEGER  NOT NULL
-                             REFERENCES patients(id) ON DELETE CASCADE,
-                embedding    BLOB     NOT NULL,
-                angle_hint   TEXT,      -- optional: 'frontal','left','right','low_light'
-                quality      REAL,      -- cosine self-distance quality score (lower = closer to avg)
-                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_face_emb_patient ON face_embeddings(patient_id)"
-        )
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS doctors (
-                id           INTEGER  PRIMARY KEY AUTOINCREMENT,
-                name         TEXT     NOT NULL,
-                dept_id      TEXT     NOT NULL,
-                dept_name    TEXT     NOT NULL,
-                qualification TEXT,
-                available    BOOLEAN  DEFAULT 1,
-                room         TEXT,
-                created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        try:
-            conn.execute("ALTER TABLE appointments ADD COLUMN doctor_id INTEGER REFERENCES doctors(id)")
-        except Exception:
-            pass
-        try:
-            conn.execute("ALTER TABLE appointments ADD COLUMN doctor_name TEXT")
-        except Exception:
-            pass
-        conn.commit()
-    print(f"[DB] Initialized -> {DB_PATH}")
-
-
-def seed_doctors():
-    """Seed default doctors if the table is empty."""
-    with get_db() as conn:
-        count = conn.execute("SELECT COUNT(*) FROM doctors").fetchone()[0]
-        if count > 0:
-            return
-        doctors = [
-            ('Dr. Rajesh Kumar',    'general',   'General Medicine', 'MD, General Medicine', 1, 'OPD-1'),
-            ('Dr. Priya Sharma',    'general',   'General Medicine', 'MBBS, DNB',            1, 'OPD-1'),
-            ('Dr. Suresh Menon',    'cardio',    'Cardiology',       'DM Cardiology',        1, 'OPD-3'),
-            ('Dr. Anitha Rao',      'cardio',    'Cardiology',       'MD, Cardiology',       1, 'OPD-3'),
-            ('Dr. Vikram Singh',    'ortho',     'Orthopaedics',     'MS Ortho',             1, 'OPD-4'),
-            ('Dr. Kavitha Nair',    'ortho',     'Orthopaedics',     'MCh Ortho',            1, 'OPD-4'),
-            ('Dr. Meena Iyer',      'paeds',     'Paediatrics',      'MD Paediatrics',       1, 'OPD-2'),
-            ('Dr. Lakshmi Devi',    'gyne',      'Gynaecology',      'MS OBG',               1, 'OPD-5'),
-            ('Dr. Deepa Rajan',     'gyne',      'Gynaecology',      'DGO',                  1, 'OPD-5'),
-            ('Dr. Arjun Pillai',    'derm',      'Dermatology',      'MD Dermatology',       1, 'OPD-6'),
-            ('Dr. Srinivas Reddy',  'ent',       'ENT',              'MS ENT',               1, 'OPD-7'),
-            ('Dr. Farida Begum',    'ent',       'ENT',              'DNB ENT',              1, 'OPD-7'),
-            ('Dr. Ganesh Subramani','ophthal',   'Ophthalmology',    'MS Ophthalmology',     1, 'OPD-8'),
-            ('Dr. Karthik Rajan',   'emergency', 'Emergency',        'MD Emergency Medicine',1, 'ER-1'),
-            ('Dr. Revathi Kumar',   'emergency', 'Emergency',        'MD, Critical Care',    1, 'ER-1'),
-        ]
-        conn.executemany(
-            "INSERT INTO doctors (name, dept_id, dept_name, qualification, available, room) VALUES (?,?,?,?,?,?)",
-            doctors,
-        )
-        conn.commit()
-        print(f"[DB] Seeded {len(doctors)} doctors")
+        logger.warning("[DB] Legacy database detected — stamping baseline %s before upgrade", BASELINE_REVISION)
+        command.stamp(cfg, BASELINE_REVISION)
+    command.upgrade(cfg, "head")
+    logger.info("[DB] Migrations at head (%s)", engine.url.render_as_string(hide_password=True))

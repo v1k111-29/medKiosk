@@ -3,6 +3,7 @@ import Webcam from 'react-webcam';
 import { useKioskStore } from '../store/useKioskStore';
 import { useTTS } from '../hooks/useVoice';
 import { faceApi } from '../services/api';
+import { Bilingual } from '../components/Bilingual';
 import { ScanFace, UserCheck, UserX, Loader2, AlertCircle } from 'lucide-react';
 
 type ScanState =
@@ -12,6 +13,7 @@ type ScanState =
   | 'found'       // known patient identified
   | 'new'         // new face, redirecting to register
   | 'no_face'     // frame had no detectable face
+  | 'phone'       // face not usable (photo-like or ambiguous) — phone check-in
   | 'error';      // server unreachable
 
 // Pulse ring colors per state
@@ -22,6 +24,7 @@ const RING: Record<ScanState, string> = {
   found:    'border-[#22C55E]',
   new:      'border-[#F59E0B]',
   no_face:  'border-red-400',
+  phone:    'border-[#F59E0B]',
   error:    'border-red-500',
 };
 
@@ -30,13 +33,14 @@ const STATUS_LABEL: Record<ScanState, string> = {
   idle:     'Step in front of the camera',
   scanning: 'Scanning your face…',
   found:    'Recognised! Welcome back 👋',
-  new:      'New visitor — opening registration…',
+  new:      'Welcome! Let us get you checked in…',
   no_face:  'No face detected — please look straight',
+  phone:    'Please check in with your mobile number',
   error:    'Camera service offline',
 };
 
 const Splash: React.FC = () => {
-  const { setStep, setPatient, setTempEmbedding, setTempGender, language } = useKioskStore();
+  const { setStep, setPatient, setTempEmbedding, setTempGender, setFaceConsent, language } = useKioskStore();
   const { speak } = useTTS();
 
   const webcamRef  = useRef<Webcam>(null);
@@ -77,7 +81,9 @@ const Splash: React.FC = () => {
     setScanState('scanning');
 
     try {
-      const res  = await faceApi.post('/identify', { image: imageSrc });
+      // match_only: before consent the server only looks for a returning, face-consented
+      // patient; for anyone else it returns {"status":"new"} with no embedding or gender.
+      const res  = await faceApi.post('/identify', { image: imageSrc, match_only: true });
       const data = res.data;
 
       if (data.status === 'found') {
@@ -98,15 +104,27 @@ const Splash: React.FC = () => {
         return; // stop the loop
 
       } else if (data.status === 'new') {
+        // Not recognised: keep nothing, ask for consent before any capture that could be stored.
         setScanState('new');
-        setTempEmbedding(data.embedding);
-        setTempGender(data.gender);
+        setTempEmbedding(null);
+        setTempGender(null);
+        setFaceConsent(null);
+        setTimeout(() => setStep('CONSENT'), 1200);
+        return; // stop the loop
+
+      } else if (data.status === 'spoof' || data.status === 'ambiguous') {
+        // spoof: frame looks like a photo/screen. ambiguous: two patients look alike.
+        // Either way face ID cannot be trusted here — identify by phone + OTP instead.
+        setScanState('phone');
+        setTempEmbedding(null);
+        setTempGender(null);
+        setFaceConsent(false);
         speak(
           language === 'ta'
-            ? 'புதிய நோயாளி. பதிவு செய்யவும்.'
-            : 'New visitor detected. Opening registration.'
+            ? 'உங்கள் மொபைல் எண் மூலம் பதிவு செய்யவும்.'
+            : 'Please check in with your mobile number.'
         );
-        setTimeout(() => setStep('REGISTER'), 2000);
+        setTimeout(() => setStep('PHONE'), 1500);
         return; // stop the loop
 
       } else {
@@ -283,9 +301,11 @@ const Splash: React.FC = () => {
 
       {/* ── Bottom info strip ── */}
       <div className="w-full px-8 pb-8 flex items-end justify-between">
-        <div className="space-y-1">
+        <div className="space-y-1 max-w-md">
           <p className="text-white/40 text-xs uppercase tracking-widest font-semibold">AI Face Recognition</p>
-          <p className="text-white/25 text-xs">Look at the camera · No touch needed</p>
+          <p className="text-white/60 text-xs">
+            <Bilingual k="splash_privacy" lang={language} primaryClass="" secondaryClass="mt-0.5" />
+          </p>
         </div>
 
         {/* Manual fallback */}
