@@ -167,6 +167,8 @@ const Vitals: React.FC = () => {
   const inputCls = "flex-1 p-4 text-lg rounded-xl bg-[#F2F6FA] border-2 border-[#DDE4EE] focus:border-[#2E7D96] outline-none transition-all";
   const labelCls = "block text-xs font-semibold text-[#8A9BB5] uppercase tracking-widest mb-2";
 
+  // Called as a plain function (not <VField/>): a component defined inside
+  // render remounts on every keystroke and the input loses focus.
   const VField = ({
     fkey, label, unit, placeholder,
   }: { fkey: keyof typeof vitals & string; label: string; unit: string; placeholder: string }) => (
@@ -241,8 +243,8 @@ const Vitals: React.FC = () => {
       {/* ── Input form ── */}
       <div className="bg-white rounded-3xl shadow-lg p-6 space-y-5">
         <div className="grid grid-cols-2 gap-4">
-          <VField fkey="height" label={t.height} unit="cm" placeholder="170" />
-          <VField fkey="weight" label={t.weight} unit="kg" placeholder="65" />
+          {VField({ fkey: "height", label: t.height, unit: "cm", placeholder: "170" })}
+          {VField({ fkey: "weight", label: t.weight, unit: "kg", placeholder: "65" })}
         </div>
 
         {/* Live BMI badge */}
@@ -256,16 +258,16 @@ const Vitals: React.FC = () => {
         )}
 
         <div className="grid grid-cols-3 gap-4">
-          <VField fkey="bp_sys" label={t.bpSys} unit="mmHg" placeholder="120" />
-          <VField fkey="bp_dia" label={t.bpDia} unit="mmHg" placeholder="80"  />
-          <VField fkey="spo2"   label={t.spo2}  unit="%"    placeholder="98"  />
+          {VField({ fkey: "bp_sys", label: t.bpSys, unit: "mmHg", placeholder: "120" })}
+          {VField({ fkey: "bp_dia", label: t.bpDia, unit: "mmHg", placeholder: "80" })}
+          {VField({ fkey: "spo2", label: t.spo2, unit: "%", placeholder: "98" })}
         </div>
 
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <VField fkey="pulse"       label={t.pulse}       unit="bpm"   placeholder="72" />
-          <VField fkey="temperature" label={t.temperature} unit="°C"    placeholder="37.0" />
-          <VField fkey="resp_rate"   label={t.respRate}    unit="/min"  placeholder="16" />
-          <VField fkey="glucose"     label={t.glucose}     unit="mg/dL" placeholder="110" />
+          {VField({ fkey: "pulse", label: t.pulse, unit: "bpm", placeholder: "72" })}
+          {VField({ fkey: "temperature", label: t.temperature, unit: "°C", placeholder: "37.0" })}
+          {VField({ fkey: "resp_rate", label: t.respRate, unit: "/min", placeholder: "16" })}
+          {VField({ fkey: "glucose", label: t.glucose, unit: "mg/dL", placeholder: "110" })}
         </div>
 
         {rangeErrors.length > 0 && (

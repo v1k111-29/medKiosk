@@ -5,7 +5,14 @@ import react from '@vitejs/plugin-react'
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '')
   const target = env.VITE_PROXY_TARGET || 'http://localhost:8000'
-  const http = { target, changeOrigin: true }
+  // SPA routes (/queue, /display, /admin/...) share prefixes with API paths.
+  // Browser page loads (Accept: text/html) must get index.html, not the backend.
+  const http = {
+    target,
+    changeOrigin: true,
+    bypass: (req: { headers: { accept?: string } }) =>
+      req.headers.accept?.includes('text/html') ? '/index.html' : undefined,
+  }
   return {
     plugins: [react()],
     server: {
