@@ -97,7 +97,7 @@ const Registration: React.FC = () => {
     allCollected, lastReply, error: voiceError,
     initListening, isListeningMode, volume, sendText,
   } = useConversationalRegistration({
-    language: 'en', // Whisper + Ollama work best in English for field extraction
+    language, // speech-to-text and spoken replies follow the kiosk language
     onFieldsExtracted: (extracted) => {
       // Auto-sync extracted fields into manual form
       setManualForm(prev => ({
@@ -111,7 +111,9 @@ const Registration: React.FC = () => {
     onAllCollected: () => {
       // Brief pause then suggest submitting
       setTimeout(() => {
-        speak("I've got all your details. Please check them below and tap 'Complete Registration'.", 'en');
+        speak(ta
+          ? `உங்கள் விவரங்கள் கிடைத்துவிட்டன. கீழே சரிபார்த்து '${t.submitBtn}' அழுத்தவும்.`
+          : `I've got all your details. Please check them below and tap '${t.submitBtn}'.`, language);
       }, 500);
     },
   });
@@ -143,7 +145,7 @@ const Registration: React.FC = () => {
     const greeting = t.aiGreeting;
     // Send initial greeting as an assistant message
     setTimeout(() => {
-      speak(greeting, 'en');
+      speak(greeting, language);
       // Auto-start listening after greeting begins
       initListening();
     }, 600);
@@ -219,7 +221,9 @@ const Registration: React.FC = () => {
           blood_group: manualForm.blood || undefined,
           city: manualForm.city || undefined,
         });
-        speak(`Registration successful. Welcome, ${name.split(' ')[0]}!`, 'en');
+        speak(ta
+          ? `பதிவு முடிந்தது. வரவேற்கிறோம், ${name.split(' ')[0]}!`
+          : `Registration successful. Welcome, ${name.split(' ')[0]}!`, language);
         setStep('CONVERSATION');
       }
     } catch (err: any) {

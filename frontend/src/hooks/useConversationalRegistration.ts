@@ -2,10 +2,10 @@
  * useConversationalRegistration
  *
  * Drives the full voice-based registration flow:
- *   1. Start recording (Whisper via /transcribe)
- *   2. Send transcript + current fields to /conversation/register (Ollama)
- *   3. Ollama extracts new fields, returns a natural-language reply
- *   4. TTS speaks the reply
+ *   1. Start recording (/transcribe in the kiosk language)
+ *   2. Send transcript + current fields to /conversation/register
+ *   3. The LLM extracts new fields, returns a natural-language reply
+ *   4. TTS speaks the reply in the kiosk language
  *   5. Auto-fill extracted fields into the form
  *   6. Repeat until all_collected === true or user submits manually
  */
@@ -29,7 +29,8 @@ export interface ConvMessage {
 }
 
 interface UseConvRegOptions {
-  language?: 'en' | 'ta' | 'auto';
+  /** Kiosk language: used for speech-to-text and for the spoken reply. */
+  language?: 'en' | 'ta';
   onFieldsExtracted?: (fields: Partial<CollectedFields>) => void;
   onAllCollected?: () => void;
 }
@@ -51,6 +52,7 @@ function pickMimeType(): string {
 export function useConversationalRegistration(options: UseConvRegOptions = {}) {
   const { language = 'en', onFieldsExtracted, onAllCollected } = options;
   const { speak, isSpeaking } = useTTS();
+  const ta = language === 'ta';
 
   const [isRecording, setIsRecording] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
@@ -92,12 +94,12 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
       setMicStream(stream);
     } catch (err: any) {
       const msg = err?.name === 'NotAllowedError'
-        ? "Microphone permission denied. Please allow access."
-        : "Could not access microphone.";
+        ? (ta ? 'மைக்ரோஃபோன் அனுமதி மறுக்கப்பட்டது. தயவுசெய்து அனுமதிக்கவும்.' : "Microphone permission denied. Please allow access.")
+        : (ta ? 'மைக்ரோஃபோனை அணுக முடியவில்லை.' : "Could not access microphone.");
       setError(msg);
-      speak(msg, 'en');
+      speak(msg, language);
     }
-  }, [micStream, speak]);
+  }, [micStream, speak, ta, language]);
 
   const sendToLLM = useCallback(async (transcript: string) => {
     if (isProcessingRef.current) return;
@@ -117,12 +119,13 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
           text: transcript,
           collected_fields: collectedFields,
           history: updatedHistory,
+          language,
         },
         { signal: abortControllerRef.current.signal, timeout: 30000 }
       );
 
       const data = res.data;
-      const reply: string = data.reply || "Could you please repeat that?";
+      const reply: string = data.reply || (ta ? 'தயவுசெய்து மீண்டும் சொல்லுங்கள்.' : "Could you please repeat that?");
       const extracted: Partial<CollectedFields> = data.extracted || {};
       const isAllCollected: boolean = data.all_collected === true;
 
@@ -145,7 +148,7 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
       setLastReply(reply);
 
       // Tell TTS to speak; VAD will automatically pause during this
-      speak(reply, 'en');
+      speak(reply, language);
 
       if (isAllCollected) {
         setAllCollected(true);
@@ -154,16 +157,18 @@ export function useConversationalRegistration(options: UseConvRegOptions = {}) {
     } catch (err: any) {
       if (err?.name === 'CanceledError' || err?.name === 'AbortError') return;
       console.error('[ConvReg] LLM call failed:', err);
-      const errMsg = "I'm having a little trouble. Could you please say that again?";
+      const errMsg = ta
+        ? 'மன்னிக்கவும், சிறிய பிரச்சனை. தயவுசெய்து மீண்டும் சொல்லுங்கள்.'
+        : "I'm having a little trouble. Could you please say that again?";
       setError(errMsg);
       setLastReply(errMsg);
-      speak(errMsg, 'en');
+      speak(errMsg, language);
       setHistory(h => [...h, { role: 'assistant', content: errMsg }]);
     } finally {
       isProcessingRef.current = false;
       setIsProcessing(false);
     }
-  }, [collectedFields, history, speak, onFieldsExtracted, onAllCollected]);
+  }, [collectedFields, history, speak, onFieldsExtracted, onAllCollected, ta, language]);
 
   // VAD Callback: Speech detected, start recording
   const handleSpeechStart = useCallback(() => {

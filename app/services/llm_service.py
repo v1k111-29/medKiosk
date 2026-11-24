@@ -45,12 +45,27 @@ Rules:
 - Accept spoken numbers ("thirty five" = 35).
 - Skip blood_group if unknown — don't insist.
 - Use their name once you know it.
+- Always write name and city in English letters, even if spoken in Tamil (முருகன் -> "Murugan", கோயம்புத்தூர் -> "Coimbatore").
 - Set all_collected true when name is known and patient seems done.
 - If the user input is exactly ".", it means no voice was heard. Reply: "I didn't quite catch that. Could you please repeat?"
 
 Return ONLY valid JSON (no markdown):
 {"extracted":{"name":null,"age":null,"phone":null,"blood_group":null,"city":null},"reply":"...","all_collected":false}
 """
+
+REGISTRATION_TAMIL_RULE = """
+LANGUAGE: The patient chose Tamil. Write "reply" in simple, polite spoken Tamil (Tamil script), as a hospital receptionist in Tamil Nadu would speak. Keep field values in "extracted" in English letters.
+If the user input is exactly ".", reply: "மன்னிக்கவும், சரியாகக் கேட்கவில்லை. மீண்டும் சொல்ல முடியுமா?"
+"""
+
+REGISTRATION_FALLBACK_REPLY = {
+    "en": "I'm sorry, I had a little trouble there. Could you please say that again?",
+    "ta": "மன்னிக்கவும், சிறிய பிரச்சனை. தயவுசெய்து மீண்டும் சொல்லுங்கள்.",
+}
+REGISTRATION_REPEAT_REPLY = {
+    "en": "Could you please repeat that?",
+    "ta": "தயவுசெய்து மீண்டும் சொல்லுங்கள்.",
+}
 
 TRIAGE_SYSTEM_PROMPT_TEMPLATE = """\
 You are a clinical triage assistant at a hospital kiosk. Your task is to route patients to the correct department based on their symptoms.
@@ -279,8 +294,12 @@ async def call_llm_registration(
     user_text: str,
     collected_fields: dict,
     conversation_history: Optional[list] = None,
+    language: str = "en",
 ) -> dict:
     """Extract patient fields from natural speech.
+
+    `language` is the kiosk language ("en" or "ta"); the spoken reply is
+    written in it. Extracted values are always in English letters.
 
     Returns {"extracted": {...}, "reply": "...", "all_collected": bool}
     """
@@ -312,11 +331,16 @@ async def call_llm_registration(
         "Extract new fields and reply naturally. Output JSON:"
     )
 
-    result = await _call_groq(REGISTRATION_SYSTEM_PROMPT, user_prompt)
+    lang = "ta" if language == "ta" else "en"
+    system_prompt = REGISTRATION_SYSTEM_PROMPT
+    if lang == "ta":
+        system_prompt += REGISTRATION_TAMIL_RULE
+
+    result = await _call_groq(system_prompt, user_prompt)
     if result is None:
         return {
             "extracted": {},
-            "reply": "I'm sorry, I had a little trouble there. Could you please say that again?",
+            "reply": REGISTRATION_FALLBACK_REPLY[lang],
             "all_collected": False,
         }
 
@@ -335,7 +359,7 @@ async def call_llm_registration(
 
     return {
         "extracted": sanitized,
-        "reply": result.get("reply", "Could you please repeat that?"),
+        "reply": result.get("reply") or REGISTRATION_REPEAT_REPLY[lang],
         "all_collected": bool(result.get("all_collected", False)),
     }
 

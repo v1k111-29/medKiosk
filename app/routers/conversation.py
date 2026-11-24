@@ -135,6 +135,7 @@ class RegisterConversationRequest(BaseModel):
         default_factory=list,
         description="Previous conversation exchanges",
     )
+    language: str = Field("en", description="Reply language: en or ta")
 
 
 class RegisterConversationResponse(BaseModel):
@@ -217,6 +218,7 @@ async def conversation_register(req: RegisterConversationRequest):
         user_text=req.text,
         collected_fields=req.collected_fields,
         conversation_history=history_dicts,
+        language=req.language,
     )
 
     logger.info(
