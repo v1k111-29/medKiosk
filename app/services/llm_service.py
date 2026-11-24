@@ -187,6 +187,11 @@ async def check_groq_health() -> dict:
 
 # ── Core Groq Call ────────────────────────────────────────────────────────────
 
+def _is_reasoning_model(name: str) -> bool:
+    n = name.lower()
+    return n.startswith("openai/gpt-oss") or n.startswith("qwen/qwen3")
+
+
 async def _call_groq(
     system_prompt: str,
     user_prompt: str,
@@ -198,8 +203,9 @@ async def _call_groq(
         logger.error("[LLM] GROQ_API_KEY is not set. Cannot call Groq API.")
         return None
 
+    model_name = model or settings.GROQ_MODEL
     payload = {
-        "model": model or settings.GROQ_MODEL,
+        "model": model_name,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
@@ -208,6 +214,13 @@ async def _call_groq(
         "temperature": 0.5,
         "max_tokens": max_tokens,
     }
+    # Reasoning models (gpt-oss, qwen3) spend output tokens on hidden reasoning
+    # before the JSON answer. With a small max_tokens they run out and Groq
+    # returns 400 json_validate_failed with empty output. Keep reasoning short
+    # and give room for it.
+    if _is_reasoning_model(model_name):
+        payload["reasoning_effort"] = "low"
+        payload["max_tokens"] = max(max_tokens, 1500)
 
     raw_text = ""
     try:
@@ -221,6 +234,12 @@ async def _call_groq(
             )
             # One short retry on rate limit (patient is waiting at the kiosk:
             # never wait more than 3 s; after that the rule engine takes over).
+            # Groq JSON mode occasionally fails validation on a valid request;
+            # one immediate retry usually succeeds.
+            if (response.status_code == 400 and attempt == 0
+                    and "json_validate_failed" in response.text):
+                logger.warning("[LLM] Groq json_validate_failed; retrying once")
+                continue
             if response.status_code == 429 and attempt == 0:
                 try:
                     wait = float(response.headers.get("retry-after", "1"))
