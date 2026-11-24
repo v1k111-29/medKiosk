@@ -70,6 +70,16 @@ class Settings(BaseSettings):
     # Face recognition
     FACE_MATCH_THRESHOLD: float = 0.45
     FACE_GALLERY_SIZE: int = 5
+    # A match only adds the new photo to the patient's gallery when it is this close
+    # (cosine distance). Borderline matches never teach the gallery a wrong face.
+    FACE_GALLERY_UPDATE_MAX_DIST: float = 0.30
+    # If a second patient is within this distance of the best match (and also under
+    # the threshold), the scan is ambiguous and the kiosk falls back to phone check-in.
+    FACE_AMBIGUITY_MARGIN: float = 0.08
+    # Reject faces that look like a printed photo or a phone/tablet screen (MiniFASNet).
+    FACE_ANTI_SPOOFING: bool = True
+    # Load (and on first run download) face models in the background at server start.
+    FACE_WARMUP: bool = True
 
     # SMS
     SMS_PROVIDER: Literal["mock", "twilio"] = "mock"

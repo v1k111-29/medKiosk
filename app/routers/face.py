@@ -46,6 +46,9 @@ from app.core.security import (
 )
 from app.services.face_service import (
     MATCH_THRESHOLD,
+    FaceEngineError,
+    SpoofSuspected,
+    warm_state,
     MAX_GALLERY_SIZE,
     best_gallery_distance,
     decode_image,
@@ -85,8 +88,11 @@ def _add_to_gallery(session: Session, patient_id: int, embedding: np.ndarray) ->
         session.add(FaceEmbedding(patient_id=patient_id, embedding=emb_bytes))
 
 
+AMBIGUOUS = "ambiguous"
+
+
 def _find_match(session: Session, embedding: np.ndarray, threshold: float):
-    """Returns (patient | None, best_dist, per-candidate log)."""
+    """Returns (patient | None | AMBIGUOUS, best_dist, per-candidate log)."""
     consented = set(session.scalars(select(Patient.id).where(Patient.face_consent.is_(True))))
     galleries: dict[int, list] = defaultdict(list)
     for pid, emb in session.execute(select(FaceEmbedding.patient_id, FaceEmbedding.embedding)):
@@ -111,16 +117,24 @@ def _find_match(session: Session, embedding: np.ndarray, threshold: float):
     if migrated:
         session.commit()
 
-    best_dist, best_pid = 1.0, None
+    best_dist, best_pid, second_dist = 1.0, None, 1.0
     dist_log = []
     for pid, gallery in galleries.items():
         dist = best_gallery_distance(embedding, gallery)
         dist_log.append({"id": pid, "dist": round(dist, 4), "gallery": len(gallery), "match": dist <= threshold})
         if dist < best_dist:
-            best_dist, best_pid = dist, pid
+            best_dist, best_pid, second_dist = dist, pid, best_dist
+        elif dist < second_dist:
+            second_dist = dist
 
-    match = session.get(Patient, best_pid) if best_pid is not None and best_dist <= threshold else None
-    return match, best_dist, dist_log
+    if best_pid is None or best_dist > threshold:
+        return None, best_dist, dist_log
+    if second_dist - best_dist < settings.FACE_AMBIGUITY_MARGIN:
+        # Two patients look almost equally close (relatives, twins): never guess.
+        logger.warning("[Face] Ambiguous match: best=%.4f second=%.4f margin=%s",
+                       best_dist, second_dist, settings.FACE_AMBIGUITY_MARGIN)
+        return AMBIGUOUS, best_dist, dist_log
+    return session.get(Patient, best_pid), best_dist, dist_log
 
 
 def _found_payload(p: Patient, distance: Optional[float] = None) -> dict:
@@ -147,13 +161,33 @@ def _identify_db(embedding: np.ndarray) -> dict:
             logger.debug("  candidate id=%s dist=%s gallery=%s", d["id"], d["dist"], d["gallery"])
         if match is None:
             return {"match": None, "dist": dist}
+        if match == AMBIGUOUS:
+            return {"match": None, "ambiguous": True, "dist": dist}
         match.visit_count = (match.visit_count or 0) + 1
-        _add_to_gallery(session, match.id, embedding)
+        # Only a clearly-same-person photo may join the gallery; a borderline match
+        # added here would pull the gallery towards a different person over time.
+        if dist <= settings.FACE_GALLERY_UPDATE_MAX_DIST:
+            _add_to_gallery(session, match.id, embedding)
         session.flush()
         return {"match": _found_payload(match, dist), "dist": dist}
 
 
 # ── Kiosk endpoints ───────────────────────────────────────────────────────────
+
+def _face_unavailable() -> KioskError:
+    return KioskError(
+        "Face scan is not available right now. Please check in with your mobile number.",
+        "முக ஸ்கேன் இப்போது கிடைக்கவில்லை. உங்கள் மொபைல் எண் மூலம் பதிவு செய்யவும்.",
+        status_code=503,
+    )
+
+
+def _require_face_engine() -> None:
+    """503 while models are still downloading/loading or after a failed load."""
+    state = warm_state()["state"]
+    if state in ("warming", "failed"):
+        raise _face_unavailable()
+
 
 @router.post("/identify", dependencies=[Depends(require_kiosk)])
 async def identify(req: IdentifyRequest):
@@ -163,7 +197,14 @@ async def identify(req: IdentifyRequest):
     except ValueError as e:
         raise KioskError(str(e), "தவறான படம்.", status_code=400)
 
-    embedding = await get_embedding_async(img)
+    _require_face_engine()
+    try:
+        embedding = await get_embedding_async(img)
+    except SpoofSuspected:
+        # Looks like a photo/screen. Not an accusation: route to phone check-in.
+        return {"status": "spoof"}
+    except FaceEngineError:
+        raise _face_unavailable()
     if embedding is None:
         return JSONResponse({"status": "no_face", "message": "No face detected — please look straight at the camera"})
 
@@ -175,6 +216,9 @@ async def identify(req: IdentifyRequest):
 
     if result["match"]:
         return result["match"]
+    if result.get("ambiguous"):
+        # Nothing about either candidate leaves the server; phone + OTP decides.
+        return {"status": "ambiguous"}
 
     if req.match_only:
         # Pre-consent scan: nothing about a non-matching visitor leaves the server or is stored.
@@ -329,7 +373,12 @@ async def identify_debug(req: IdentifyRequest):
     except ValueError as e:
         return {"error": str(e)}
 
-    embedding = await get_embedding_async(img)
+    try:
+        embedding = await get_embedding_async(img)
+    except SpoofSuspected:
+        return {"status": "spoof", "candidates": []}
+    except FaceEngineError as e:
+        return {"status": "engine_error", "error": str(e), "candidates": []}
     if embedding is None:
         return {"status": "no_face", "candidates": []}
 
@@ -339,11 +388,13 @@ async def identify_debug(req: IdentifyRequest):
             names = dict(session.execute(select(Patient.id, Patient.name)).all())
             for d in dist_log:
                 d["name"] = names.get(d["id"])
+            if match == AMBIGUOUS:
+                return AMBIGUOUS, dist, dist_log
             return (match.name if match else None), dist, dist_log
 
     would_match, dist, dist_log = await run_in_threadpool(_run)
     return {
-        "status": "found" if would_match else "no_match",
+        "status": AMBIGUOUS if would_match == AMBIGUOUS else ("found" if would_match else "no_match"),
         "best_dist": round(dist, 4),
         "threshold": MATCH_THRESHOLD,
         "would_match": would_match,

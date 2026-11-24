@@ -30,6 +30,8 @@ if not exist .venv\Scripts\python.exe (
     python -m venv .venv || goto :error
 )
 set PY=.venv\Scripts\python.exe
+REM DeepFace prints emoji; force UTF-8 so a cp1252 console cannot crash it.
+set PYTHONUTF8=1
 
 if not exist .venv\.deps-ok (
     echo   Installing Python dependencies (first run, can take several minutes^)...
@@ -42,6 +44,18 @@ if not exist .venv\.deps-ok (
         "%PY%" -m pip install -q -r requirements-base.txt || goto :error
     ) else (
         echo ok> .venv\.deps-ok
+    )
+)
+
+REM --- Face model weights (~800 MB, first run only; needs internet) ---
+if exist .venv\.deps-ok if not exist .venv\.face-models-ok (
+    echo   Downloading face recognition models ^(first run, about 800 MB^)...
+    "%PY%" -m app.services.face_service
+    if errorlevel 1 (
+        echo   [WARN] Face model download failed - face scan disabled until it succeeds.
+        echo          Phone check-in still works. Re-run start.bat to retry.
+    ) else (
+        echo ok> .venv\.face-models-ok
     )
 )
 

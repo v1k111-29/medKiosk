@@ -21,6 +21,10 @@ Paths keep their current style (no `/api` prefix) so existing kiosk calls keep w
 | `CORS_ORIGINS` | `http://localhost:5173,http://localhost:5174` | comma list |
 | `FACE_MATCH_THRESHOLD` | `0.45` | ArcFace cosine distance |
 | `FACE_GALLERY_SIZE` | `5` | |
+| `FACE_GALLERY_UPDATE_MAX_DIST` | `0.30` | a match adds the new photo to the gallery only at or below this distance |
+| `FACE_AMBIGUITY_MARGIN` | `0.08` | best and second-best patient closer than this → `ambiguous` |
+| `FACE_ANTI_SPOOFING` | `true` | MiniFASNet photo/screen check on the largest face |
+| `FACE_WARMUP` | `true` | load/download face models in the background at start |
 | `SMS_PROVIDER` | `mock` | `mock` (log only) or `twilio` |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | empty | |
 | `HOSPITAL_NAME` | `City Hospital` | used in SMS text |
@@ -113,6 +117,7 @@ Existing: `/identify`, `/register`, `/transcribe`, `/conversation/*`, `/vitals`,
 - Both read API base from `VITE_API_URL` (default `''` with Vite proxy to `http://localhost:8000`, including `/ws` with `ws: true`).
 
 ## Face consent, phone identification, clinical safety (batch 3)
+- `POST /identify` face rules (2026-11): the LARGEST face in the frame is used (YuNet detector, OpenCV Haar fallback; faces under 60 px ignored). Extra responses, all without any patient data: `{"status":"spoof"}` (face looks like a photo/screen) and `{"status":"ambiguous"}` (two patients almost equally close); the kiosk sends both to phone + OTP. Face engine loading or failed → 503 KioskError (bilingual "use your mobile number"); an engine crash is never reported as `no_face`. `/health` → `services.face_models`: `not_installed|not_started|warming|ready|failed`. Model prefetch: `python -m app.services.face_service`.
 - `POST /identify` adds optional `match_only` (bool, default false). Kiosk sends `true` from the always-on splash camera (before consent): a non-match returns only `{"status":"new"}` (no embedding, no gender); nothing is stored. Found → unchanged shape.
 - `POST /register` requires `face_consent` (bool, no default → 422 if omitted). Embedding stored only when true; server records `consent_version = "v1-2026-11"` and `consent_at`. Client `consent_version` is ignored. Valid phones are stored as E.164.
 - `POST /identify/phone/start` (kiosk) `{phone}` → always `{"status":"otp_sent"}` (no enumeration). 6-digit OTP by SMS (mock provider logs it in dev). Rate limit 3 per phone per 10 min → 429. Invalid number → 400.

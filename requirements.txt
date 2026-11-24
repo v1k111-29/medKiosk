@@ -1,8 +1,11 @@
 # Full backend install = base + face recognition (DeepFace/ArcFace + TensorFlow, heavy).
+# Model weights (~800 MB) download on first use, or ahead of time with:
+#   python -m app.services.face_service
 # Without the face block the app still boots; /identify returns an error.
 -r requirements-base.txt
 
 # ── Face recognition (heavy; imported lazily — app boots without it) ─────────
 deepface>=0.0.92
 tf-keras
-opencv-python>=4.8.0
+# OpenCV comes with deepface as opencv-contrib-python-headless. Do NOT also install
+# opencv-python: two OpenCV packages share the cv2 folder and break each other.

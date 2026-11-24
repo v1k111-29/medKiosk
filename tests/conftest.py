@@ -44,6 +44,7 @@ os.environ.update({
     "SMS_PROVIDER": "mock",
     "GROQ_API_KEY": "",          # LLM unavailable → exercises the rule-based fallback
     "SEED_DEMO_USERS": "true",
+    "FACE_WARMUP": "false",      # never load TensorFlow models during unit tests
     "JWT_SECRET": "test-secret-for-pytest-only-0123456789abcdef",
 })
 

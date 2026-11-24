@@ -49,7 +49,10 @@ No hospital HIS/EMR or ABDM integration exists.
   anyone else.
 - Identification:
   - **Face**: ArcFace embeddings via DeepFace. Each patient has a gallery of up to 5 templates;
-    matching is by cosine distance (`FACE_MATCH_THRESHOLD`).
+    matching is by cosine distance (`FACE_MATCH_THRESHOLD`). The largest face in the frame is
+    used. A face that looks like a photo or screen (anti-spoofing), or that is almost equally
+    close to two patients, is never matched: the visitor checks in by phone instead. Model
+    weights (~800 MB) download on first run (`python -m app.services.face_service`).
   - **Phone + OTP**: for visitors who decline face recognition. A 6-digit SMS code is stored only
     as an HMAC, expires after 5 minutes, allows 5 wrong attempts, and is rate-limited to
     3 codes per phone per 10 minutes. Several patients can share one number, for example a
@@ -155,7 +158,7 @@ All settings are in `.env` (see `.env.example`), read by `app/core/config.py`.
 | `SMS_PROVIDER`, `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | Optional | `mock` (the default) only logs messages, so phone OTP **does not reach patients** until Twilio is configured. |
 | `HOSPITAL_NAME` | Optional | Used in SMS text. |
 | `OTP_*`, `PHONE_VERIFICATION_TOKEN_MINUTES`, `CONSENT_VERSION`, `CHILD_AGE_YEARS` | Optional | OTP limits, consent text version, child age cut-off. Defaults are in `.env.example`. |
-| `FACE_MATCH_THRESHOLD`, `FACE_GALLERY_SIZE` | Optional | Face matching tuning. |
+| `FACE_MATCH_THRESHOLD`, `FACE_GALLERY_SIZE`, `FACE_GALLERY_UPDATE_MAX_DIST`, `FACE_AMBIGUITY_MARGIN`, `FACE_ANTI_SPOOFING` | Optional | Face matching tuning and safety. |
 
 ## Demo accounts
 

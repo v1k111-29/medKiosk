@@ -28,6 +28,7 @@ from sqlalchemy import func, select
 
 from app.core.config import settings
 from app.core.database import run_migrations, session_scope
+from app.core.utf8_console import force_utf8_console
 from app.core.errors import KioskError, global_exception_handler, kiosk_exception_handler
 from app.core.models import Patient
 from app.core.seed import seed_all
@@ -52,6 +53,8 @@ from app.services.realtime import hub
 APP_VERSION = "3.0.0"
 
 # ── Logging ───────────────────────────────────────────────────────────────────
+force_utf8_console()  # DeepFace prints emoji; cp1252 consoles would crash it
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -102,17 +105,25 @@ def _deepface_installed() -> bool:
     return importlib.util.find_spec("deepface") is not None
 
 
-def _warm_arcface() -> None:
-    import numpy as np
+def _face_models_state() -> str:
+    """not_installed | not_started | warming | ready | failed"""
+    if not _deepface_installed():
+        return "not_installed"
+    from app.services.face_service import warm_state
 
-    from app.services.face_service import get_df
+    return warm_state()["state"]
 
-    get_df().represent(
-        img_path=np.zeros((112, 112, 3), dtype=np.uint8),
-        model_name="ArcFace",
-        detector_backend="skip",
-        enforce_detection=False,
-    )
+
+async def _warm_face_models() -> None:
+    """Background: first run downloads ~800 MB, so never block server start on it."""
+    from app.services.face_service import warm_up
+
+    logger.info("[AI] Loading face models in the background...")
+    try:
+        await run_in_threadpool(warm_up)
+        logger.info("[AI] Face models ready")
+    except Exception as e:
+        logger.error("[AI] Face model warm-up failed: %s — face scan disabled, phone check-in works", e)
 
 
 def _startup_db() -> None:
@@ -141,14 +152,10 @@ async def lifespan(app: FastAPI):
     await groq_client.open_client()
 
     # 4. Face recognition warm-up (optional dependency)
-    if _deepface_installed():
-        try:
-            logger.info("[AI] Warming up ArcFace model...")
-            await run_in_threadpool(_warm_arcface)
-            logger.info("[AI] ArcFace model ready")
-        except Exception as e:
-            logger.warning("[AI] ArcFace warmup failed: %s", e)
-    else:
+    if _deepface_installed() and settings.FACE_WARMUP:
+        # Keep a reference so the task is not garbage-collected.
+        app.state.face_warm_task = asyncio.create_task(_warm_face_models())
+    elif not _deepface_installed():
         logger.warning("[AI] deepface not installed — /identify will fail; other routes work")
 
     # 5. Groq availability
@@ -215,6 +222,7 @@ async def health():
         "services": {
             "database": {"ok": db_ok, "patients": patient_count},
             "face_recognition": _deepface_installed(),
+            "face_models": _face_models_state(),
             "whisper": is_whisper_available(),
             "llm": llm_ok,
             "realtime": {"staff": hub.count("staff"), "display": hub.count("display")},
